@@ -1,0 +1,5 @@
+.claude
+.opencode
+.chronicle.json
+*.chronicle.tmp
+docs/decisions
