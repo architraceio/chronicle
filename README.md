@@ -4,7 +4,7 @@
 
 Chronicle captures the architectural and design decisions you make with an AI coding agent and writes them as ADR markdown files into your repository, while you work. Local-first, no account, no telemetry. Sponsored by [architrace](https://architrace.io).
 
-It is distributed as an [APM](https://github.com/microsoft/apm) package and works with Claude Code, Codex, Gemini CLI, Cursor, GitHub Copilot and OpenCode, each to the extent the harness allows (see the [support matrix](docs/harnesses.md)).
+It is distributed as an [APM](https://github.com/microsoft/apm) package and works with Claude Code, Codex, Gemini CLI, Cursor, GitHub Copilot and OpenCode, each as far as the agent allows (see [Supported agents](#supported-agents)).
 
 ## What it does
 
@@ -14,10 +14,26 @@ It is distributed as an [APM](https://github.com/microsoft/apm) package and work
 - **Deterministic bookkeeping.** Numbering, file names, templates, status changes and the index are handled by a script, not left to the model.
 - **Loop-safe by design.** Six independent guards make sure a hook can never trap the agent in a loop or spawn recursive judge runs. The worst case per user message is one judge call and one extra turn.
 
+## Supported agents
+
+What happens automatically depends on what each agent lets hooks do:
+
+| | Claude Code | Codex | Gemini CLI | Cursor | Copilot CLI | Copilot in VS Code | OpenCode |
+|---|---|---|---|---|---|---|---|
+| Plans turn into ADRs | ✅ | 📝 | ✅ | 📝 | ⚠️ | 📝 | 📝 |
+| Decisions made in chat are recorded | ✅ | ✅ | ✅ ¹ | ✅ | ✅ | ⚠️ ³ | 📝 |
+| `/log-decision`, `/chronicle-review` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| One-time setup | none | trust hooks in `/hooks`, add the rule ² | accept trust prompt | none | none | none | add the rule ² |
+
+✅ automatic · 📝 the agent is instructed to do it (usually works, not guaranteed), plus the manual commands · ⚠️ expected to work, not tested yet · ¹ Gemini shows you a hint right away and the agent records it at its next step · ² Chronicle's rule has to be added to `AGENTS.md` once: [how](docs/getting-started.md#add-the-chronicle-rule-to-agentsmd-codex-opencode) · ³ VS Code agent hooks are in preview and read Chronicle's Copilot hooks; [not tested yet](docs/harnesses.md#github-copilot)
+
+Only Claude Code has been tested end to end with a live agent so far. Details per agent: [agent support](docs/harnesses.md).
+
 ## Requirements
 
 - [APM](https://github.com/microsoft/apm) ≥ 0.38 (`pip install apm-cli`, or run it via `uvx --from apm-cli apm`)
-- `bash`, `jq`, `git`
+- `bash` (3.2 or later), `jq`, `git`
+- Linux, macOS or Windows with WSL. The hooks are bash scripts, so agents running natively on Windows can't run them; the skills and manual commands still work there. Tested on Linux so far.
 - One or more supported agents
 
 ## Install
@@ -36,6 +52,7 @@ One-time extra steps for some agents:
 |---|---|
 | Codex | Trust the Chronicle hooks in `/hooks` (again after each update). |
 | Gemini CLI | Accept the hook trust prompt. |
+| Codex, OpenCode | Add Chronicle's rule to `AGENTS.md` with `apm compile`. If you already have an `AGENTS.md`, it needs a marked section first: see [Add the Chronicle rule to AGENTS.md](docs/getting-started.md#add-the-chronicle-rule-to-agentsmd-codex-opencode). |
 | Any, with APM's executables gate on | `apm approve architraceio/chronicle` |
 
 Optional: run `/chronicle-status` once. It shows the config, offers to create `.chronicle.json`, and lets you pick a template.
@@ -98,13 +115,14 @@ apm update architraceio/chronicle
 apm uninstall architraceio/chronicle
 ```
 
-Uninstall removes Chronicle's hooks, scripts, skills, agents and commands, and leaves your other hooks untouched. Your ADRs, plans and `.chronicle.json` stay: they are your records.
+Uninstall removes Chronicle's hooks, scripts, skills, agents and commands, and leaves your other hooks untouched. It doesn't touch `AGENTS.md`: delete the Chronicle text from it yourself (see [above](docs/getting-started.md#add-the-chronicle-rule-to-agentsmd-codex-opencode)). Your ADRs, plans and `.chronicle.json` stay: they are your records.
 
 ## Documentation
 
 - [Getting started](docs/getting-started.md)
 - [How it works](docs/how-it-works.md): capture flows, judge, loop safety
-- [Agent support matrix and workarounds](docs/harnesses.md)
+- [Agent support in detail](docs/harnesses.md): full matrix, workarounds, per-agent notes
+- [Behavior reference](docs/behavior.md): every event, guard, message, file and log entry
 - [Customization](docs/customization.md)
 - [Why ADRs](docs/why-adrs.md)
 - [Scaling up](docs/scaling-up.md)

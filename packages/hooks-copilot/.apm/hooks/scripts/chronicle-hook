@@ -192,7 +192,7 @@ reply_text() {
 }
 
 # ---------------------------------------------------------------- judge
-DEFAULT_KEYWORDS="let'?s (go with|use|pick|switch)|we('| wi)ll (use|go with|adopt|switch)|decided( to| on)?|decision is|going (with|to use)|chosen approach|(i|we)('d| would) (recommend|go with)|trade-?offs?|instead of|rather than|as opposed to|in favou?r of|switch(ed|ing)? (to|from)|migrat(e|ing) (to|from)|replace [a-z0-9._-]+ with|adopt(ed|ing)?|drop(ped|ping)? [a-z0-9._-]+ (for|in favou?r)|architectur(e|al)|\\bADR\\b"
+DEFAULT_KEYWORDS="let'?s (go with|use|pick|switch)|we('| wi)ll (use|go with|adopt|switch)|decided( to| on)?|decision is|going (with|to use)|chosen approach|(i|we)('d| would) (recommend|go with)|trade-?offs?|instead of|rather than|as opposed to|in favou?r of|switch(ed|ing)? (to|from)|migrat(e|ing) (to|from)|replace [a-z0-9._-]+ with|adopt(ed|ing)?|drop(ped|ping)? [a-z0-9._-]+ (for|in favou?r)|architectur(e|al)|(^|[^a-z])adrs?([^a-z]|$)"
 
 prefilter() { # prefilter <text>
   local kw extra
@@ -210,6 +210,29 @@ judge_lock() {
   mkdir "$l" 2>/dev/null
 }
 judge_unlock() { rmdir "$STATE_ROOT/judge.lock" 2>/dev/null || true; }
+
+# with_timeout <seconds> <cmd...>: coreutils `timeout` where available, else a
+# shell watchdog (macOS has no `timeout` by default). stdin is passed through.
+with_timeout() {
+  local t="$1"; shift
+  if [ -z "${CHRONICLE_FORCE_WATCHDOG:-}" ] && command -v timeout >/dev/null 2>&1; then
+    timeout "$t" "$@"; return
+  fi
+  "$@" <&0 &
+  local pid=$! wd rc
+  # Stop the command first (so it can't act on a dead child), then its children.
+  # shellcheck disable=SC2086  # $kids is a whitespace-separated PID list
+  ( sleep "$t"
+    kids="$(pgrep -P "$pid" 2>/dev/null)"
+    kill -TERM "$pid" 2>/dev/null
+    [ -n "$kids" ] && kill -TERM $kids 2>/dev/null
+    sleep 2
+    kill -KILL "$pid" $kids 2>/dev/null ) >/dev/null 2>&1 &
+  wd=$!
+  wait "$pid"; rc=$?
+  kill "$wd" 2>/dev/null; wait "$wd" 2>/dev/null
+  return $rc
+}
 
 # run_judge <prompt> -> raw model text on stdout; non-zero on failure
 run_judge() {
@@ -233,8 +256,7 @@ run_judge() {
     esac
     command -v "${cmd[0]}" >/dev/null 2>&1 || { rmdir "$work"; return 1; }
   fi
-  if command -v timeout >/dev/null 2>&1; then cmd=(timeout "$tmo" "${cmd[@]}"); fi
-  out="$(cd "$work" && printf '%s' "$prompt" | CHRONICLE_JUDGE=1 "${cmd[@]}" 2>/dev/null)"; rc=$?
+  out="$(cd "$work" && export CHRONICLE_JUDGE=1 && printf '%s' "$prompt" | with_timeout "$tmo" "${cmd[@]}" 2>/dev/null)"; rc=$?
   rm -rf "$work"
   [ $rc -eq 0 ] && [ -n "$out" ] || return 1
   # Unwrap CLI JSON envelopes (.result for claude/cursor, .response for gemini).
@@ -360,7 +382,7 @@ on_prompt() {
   local list
   case "$HARNESS" in
     claude|codex|gemini)
-      if list="$(take_undelivered)"; then
+      if list="$(take_undelivered)"; then # Cursor/Copilot: prompt hooks can't add context
         log_event '{"action":"deferred-delivery","via":"prompt"}'
         emit_context prompt "Chronicle: your previous turn contained decisions that are not recorded yet:
 $list
@@ -389,25 +411,28 @@ on_post_tool() {
     if [ "$HARNESS" = "claude" ]; then promote_plan "$PLAN_TEXT" "$PLAN_PATH"; return; fi
     save_pending "$PLAN_TEXT" "$PLAN_PATH"; allow; return
   fi
-  is_edit_tool "$name" || { allow; return; }
+  if is_edit_tool "$name"; then
+    local ddir project_edit=0 f
+    ddir="$PROJECT_DIR/$(decisions_dir_rel)"
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      case "$f" in
+        "$ddir"/[0-9]*-*.md) date +%s > "$STATE_ROOT/last-adr" ;;   # an ADR was written
+        "$ddir"/*|"$CHRONICLE_DIR"/*) ;;
+        "$PROJECT_DIR"/*) project_edit=1 ;;
+      esac
+    done < <(edited_paths)
 
-  local ddir project_edit=0 f
-  ddir="$PROJECT_DIR/$(decisions_dir_rel)"
-  while IFS= read -r f; do
-    [ -n "$f" ] || continue
-    case "$f" in
-      "$ddir"/[0-9]*-*.md) date +%s > "$STATE_ROOT/last-adr" ;;   # an ADR was written
-      "$ddir"/*|"$CHRONICLE_DIR"/*) ;;
-      "$PROJECT_DIR"/*) project_edit=1 ;;
-    esac
-  done < <(edited_paths)
-
-  if [ $project_edit -eq 1 ] && [ -f "$SDIR/pending-plan.json" ]; then
-    promote_plan "$(jq -r .plan "$SDIR/pending-plan.json")" "$(jq -r .path "$SDIR/pending-plan.json")"
-    return
+    if [ $project_edit -eq 1 ] && [ -f "$SDIR/pending-plan.json" ]; then
+      promote_plan "$(jq -r .plan "$SDIR/pending-plan.json")" "$(jq -r .path "$SDIR/pending-plan.json")"
+      return
+    fi
   fi
+  # Deferred delivery on the next tool result, for any tool. Every harness can
+  # add context here; for Cursor and Copilot it is the only channel, because
+  # their prompt-submit hooks cannot add context.
   local list
-  if [ "$HARNESS" = "gemini" ] && list="$(take_undelivered)"; then
+  if list="$(take_undelivered)"; then
     log_event '{"action":"deferred-delivery","via":"post-tool"}'
     emit_context post-tool "Chronicle: unrecorded decisions from your previous turn:
 $list
@@ -426,7 +451,7 @@ on_reply() { # Cursor afterAgentResponse: remember the final text for the stop h
 on_stop() {
   [ "$(cfg '.capture.midSession')" = "false" ] && { allow; return; }
   # Loop guard #2: the harness says we are already continuing because of a stop hook.
-  if [ "$(field '.stop_hook_active')" = "true" ]; then allow; return; fi
+  if [ "$(field '.stop_hook_active // .stopHookActive')" = "true" ]; then allow; return; fi
   if [ "$HARNESS" = "cursor" ]; then
     [ "$(field '.loop_count')" != "" ] && [ "$(field '.loop_count')" != "0" ] && { allow; return; }
     [ "$(field '.status')" != "" ] && [ "$(field '.status')" != "completed" ] && { allow; return; }

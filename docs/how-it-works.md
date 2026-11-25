@@ -1,5 +1,7 @@
 # How it works
 
+This is the overview. The [behavior reference](behavior.md) covers every event, guard, message, state file and log entry in detail.
+
 Chronicle has three parts:
 
 - **`chronicle-adr`** (in the `chronicle-adr` skill): a bash script that owns numbering, file names, templates, status changes, the index and the git guard. The model only writes prose.
@@ -24,7 +26,7 @@ At the end of every turn (`Stop`, `AfterAgent`, `stop`, `agentStop`):
 2. **Window.** The conversation since the last verdict, from the transcript where available (user messages included), plus the final reply, up to 16k characters.
 3. **Prefilter.** A case-insensitive keyword regex ("let's go with", "instead of", "trade-off", "decided", …, plus your `prefilterKeywords`). No match → done. This costs nothing and is what happens on most turns.
 4. **Judge.** Your agent's CLI with a small model, run in an empty temp directory with `CHRONICLE_JUDGE=1` and hooks disabled where possible. It returns `{"decisions":[{"title","final"}]}` and ignores decisions already in your ADR list.
-5. **Result.** If there are new decisions, the agent is asked to record them now: Status Accepted if final, otherwise Proposed. On Gemini, or with `capture.mode: "nudge"`, you get a hint, and the agent gets the reminder at the next tool call or prompt.
+5. **Result.** If there are new decisions, the agent is asked to record them now: Status Accepted if final, otherwise Proposed. On Gemini, or with `capture.mode: "nudge"`, you get a hint, and the agent gets the reminder at the next tool call or prompt. Cursor and Copilot can't show hints, and their prompt hooks can't add context, so there the reminder comes with the next tool result.
 
 Everything Chronicle does is logged to `.chronicle/log.jsonl`. `/chronicle-status` summarizes it.
 

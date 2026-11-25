@@ -24,7 +24,6 @@
     ],
     "postToolUse": [
       {
-        "matcher": "Write",
         "hooks": [
           {
             "type": "command",

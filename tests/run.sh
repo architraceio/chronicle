@@ -221,6 +221,16 @@ out="$(hook cursor stop '{"conversation_id":"k2","status":"completed","loop_coun
 expect "cursor: loop_count > 0 -> allow" '. == {}' "$out"
 out="$(hook cursor stop '{"conversation_id":"k3","status":"aborted","loop_count":0}')"
 expect "cursor: aborted -> allow" '. == {}' "$out"
+new_project
+printf '{"capture":{"mode":"nudge"}}' > "$P/.chronicle.json"
+hook cursor prompt '{"conversation_id":"kn"}' >/dev/null
+hook cursor reply "{\"conversation_id\":\"kn\",\"text\":\"$DECISION_MSG\"}" >/dev/null
+out="$(hook cursor stop '{"conversation_id":"kn","status":"completed","loop_count":0}')"
+expect "cursor nudge: no follow-up" '(has("followup_message") | not)' "$out"
+out="$(hook cursor prompt '{"conversation_id":"kn"}')"
+expect "cursor nudge: beforeSubmitPrompt can't add context -> allow" '. == {}' "$out"
+out="$(hook cursor post-tool '{"conversation_id":"kn","tool_name":"Read","tool_input":{"path":"x"}}')"
+expect "cursor nudge: deferred delivery via postToolUse" '.additional_context | test("SQLite")' "$out"
 
 echo "== engine: Copilot"
 new_project
@@ -230,6 +240,41 @@ out="$(hook copilot stop "{\"sessionId\":\"cp1\",\"transcriptPath\":\"$TMP/cp.js
 expect "copilot: transcript parsed -> block" '.decision == "block" and (.reason | test("SQLite"))' "$out"
 out="$(hook copilot pre-tool '{"sessionId":"cp1","toolName":"bash","toolArgs":"{\"command\":\"ls\"}"}')"
 expect "copilot: unrelated preToolUse -> allow" '. == {}' "$out"
+new_project
+printf '{"capture":{"mode":"nudge"}}' > "$P/.chronicle.json"
+hook copilot prompt '{"sessionId":"cpn"}' >/dev/null
+out="$(hook copilot stop "{\"sessionId\":\"cpn\",\"transcriptPath\":\"$TMP/cp.jsonl\",\"stopReason\":\"end_turn\"}")"
+expect "copilot nudge: no block" '(has("decision") | not)' "$out"
+out="$(hook copilot prompt '{"sessionId":"cpn"}')"
+expect "copilot nudge: prompt hook can't add context -> allow" '. == {}' "$out"
+out="$(hook copilot post-tool '{"sessionId":"cpn","toolName":"bash","toolArgs":"{\"command\":\"ls\"}"}')"
+expect "copilot nudge: deferred delivery via postToolUse" '.additionalContext | test("SQLite")' "$out"
+out="$(hook copilot post-tool '{"sessionId":"cpn","toolName":"bash","toolArgs":"{\"command\":\"ls\"}"}')"
+expect "copilot nudge: delivered only once" '. == {}' "$out"
+new_project
+hook copilot prompt '{"sessionId":"cpl"}' >/dev/null
+out="$(hook copilot stop "{\"sessionId\":\"cpl\",\"stopHookActive\":true,\"transcriptPath\":\"$TMP/cp.jsonl\"}")"
+expect "copilot: camelCase stopHookActive -> allow" '. == {}' "$out"
+
+echo "== engine: judge timeout and keyword portability"
+for mode in timeout watchdog; do
+  new_project
+  printf '{"judge":{"timeoutSec":1}}' > "$P/.chronicle.json"
+  hook claude prompt "{\"session_id\":\"to$mode\"}" >/dev/null
+  start=$(date +%s)
+  if [ "$mode" = watchdog ]; then export CHRONICLE_FORCE_WATCHDOG=1; fi
+  out="$(hook claude stop "{\"session_id\":\"to$mode\",\"last_assistant_message\":\"$DECISION_MSG\"}" 'sleep 8; echo "{\"decisions\":[]}"')"
+  unset CHRONICLE_FORCE_WATCHDOG
+  took=$(( $(date +%s) - start ))
+  [ "$took" -le 5 ] && ok "judge killed after timeoutSec ($mode, ${took}s)" || fail "judge killed after timeoutSec ($mode)" "took ${took}s"
+  expect "judge timeout ($mode) -> self fallback" '.decision == "block" and (.reason | test("Chronicle check"))' "$out"
+done
+new_project
+out="$(hook claude stop '{"session_id":"kw1","last_assistant_message":"Updated the address field."}' "$JUDGE_FAIL")"
+expect "keyword: 'address' does not match ADR" '. == {}' "$out"
+hook claude prompt '{"session_id":"kw2"}' >/dev/null
+out="$(hook claude stop '{"session_id":"kw2","last_assistant_message":"This needs an ADR."}')"
+expect "keyword: standalone ADR matches" '.decision == "block"' "$out"
 
 echo "== chronicle-adr"
 new_project

@@ -22,7 +22,7 @@ Everything is configured in `.chronicle.json` at the project root. All keys are 
 | `archivePlans` | bool | Keep approved plans verbatim in `_plans/`. |
 | `capture.planAccept` | bool | Turn plans into ADRs. |
 | `capture.midSession` | bool | Run the end-of-turn filter and judge. |
-| `capture.mode` | `auto`, `nudge` | `auto`: the agent records the decision before stopping. `nudge`: you get a hint, and the agent gets a reminder on the next prompt. |
+| `capture.mode` | `auto`, `nudge` | `auto`: the agent records the decision before stopping. `nudge`: you get a hint (not in Cursor and Copilot, which have no channel for it), and the agent gets a reminder on the next prompt or tool result. |
 | `capture.maxBlocksPerSession` | int | Hard cap on how often Chronicle may make the agent continue in one session. |
 | `judge.via` | `cli`, `self` | `cli`: a cheap model through your agent's CLI. `self`: no extra call; the main agent checks itself on a keyword match. |
 | `judge.model` | model id or `null` | `null` = `haiku` for Claude Code, the CLI default elsewhere. Set a small model for Codex, Gemini, Cursor and Copilot. |

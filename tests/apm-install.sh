@@ -51,6 +51,7 @@ has  "/chronicle-review command" .gemini/commands/chronicle-review.toml
 echo "== Cursor"
 for e in sessionStart beforeSubmitPrompt postToolUse afterAgentResponse stop; do jqok "hook $e" .cursor/hooks.json ".hooks.$e != null"; done
 jqok "stop loop_limit = 1"       .cursor/hooks.json '.hooks.stop[0].loop_limit == 1'
+jqok "postToolUse on every tool (deferred delivery)" .cursor/hooks.json '[.hooks.postToolUse[] | select(any(.hooks[]?; .command | test("chronicle-hook")))] | all(has("matcher") | not)'
 has  "rule"                      .cursor/rules/chronicle.mdc
 has  "agent"                     .cursor/agents/decision-logger.md
 
@@ -65,6 +66,20 @@ has  "/log-decision prompt"      .github/prompts/log-decision.prompt.md
 echo "== OpenCode"
 has  "agent"                     .opencode/agents/decision-logger.md
 has  "skills via .agents"        .agents/skills/log-decision/SKILL.md
+
+echo "== AGENTS.md rule (documented in docs/getting-started.md)"
+printf '# Team notes\n\nKeep me.\n' > "$P/AGENTS.md"
+# shellcheck disable=SC2086
+(cd "$P" && $APM compile >"$TMP/compile1.log" 2>&1)
+grep -q 'Keep me.' "$P/AGENTS.md" && ! grep -q 'Chronicle' "$P/AGENTS.md" \
+  && ok "hand-written AGENTS.md left alone by default" || fail "hand-written AGENTS.md left alone by default"
+printf '\ncompilation:\n  agents_md:\n    mode: managed_section\n' >> "$P/apm.yml"
+printf '\n<!-- apm:start -->\n<!-- apm:end -->\n\nFooter.\n' >> "$P/AGENTS.md"
+# shellcheck disable=SC2086
+(cd "$P" && $APM compile >"$TMP/compile2.log" 2>&1) && ok "apm compile (managed section)" || { fail "apm compile (managed section)"; cat "$TMP/compile2.log"; }
+grep -q 'Keep me.' "$P/AGENTS.md" && grep -q 'Footer.' "$P/AGENTS.md" && ok "own text kept" || fail "own text kept"
+sed -n '/apm:start/,/apm:end/p' "$P/AGENTS.md" | grep -q 'Architectural decisions (Chronicle)' \
+  && ok "rule written between markers" || fail "rule written between markers"
 
 echo "== apm uninstall"
 # shellcheck disable=SC2086

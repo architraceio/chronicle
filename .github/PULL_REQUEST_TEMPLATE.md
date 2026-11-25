@@ -19,4 +19,4 @@ Fixes #
 - [ ] `make test-apm` passes if manifests, hook files or package layout changed
 - [ ] New behavior has a test in `tests/run.sh`; loop-related changes test each guard on its own
 - [ ] Live smoke test from `TESTING.md` run for affected agents (say which)
-- [ ] Docs updated (`README.md`, `docs/harnesses.md` matrix if support changed, `CHANGELOG.md`)
+- [ ] Docs updated (`README.md`, `docs/behavior.md` if engine behavior changed, support tables if support changed, `CHANGELOG.md`)

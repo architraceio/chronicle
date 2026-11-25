@@ -15,8 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Plan capture that survives a broken workflow: plans are tracked when proposed and promoted on approval or on the first project edit.
 - Six independent loop guards, including a per-session cap and a fork guard for the judge.
 - `chronicle-adr` script for numbering, templates, supersede, index and a git `guard` (pre-commit or CI).
-- Skills `chronicle-adr`, `log-decision`, `chronicle-review`, `chronicle-status`; a shared rule for agents without full hook support; deferred delivery for Gemini.
+- Skills `chronicle-adr`, `log-decision`, `chronicle-review`, `chronicle-status`; a shared rule for agents without full hook support; deferred delivery of reminders on the next prompt or tool result (Gemini always, every agent in nudge mode).
+- Portable judge timeout: coreutils `timeout` where available, otherwise a shell watchdog (macOS).
 - Unit tests (`make test`) and an APM install test (`make test-apm`).
+- Docs: a simplified agent support table in the README and getting started guide, the detailed matrix in `docs/harnesses.md`, and an in-depth behavior reference in `docs/behavior.md`.
 
 ### Changed
 - `.chronicle.json` version 2 (`capture`, `judge`, `guard`); version 1 files are migrated automatically.
