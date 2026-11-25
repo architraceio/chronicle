@@ -5,32 +5,24 @@ on:
     tags:
       - 'v*'
 
+permissions:
+  contents: write
+
 jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
-    
-    - name: Create Release
-      uses: actions/create-release@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        tag_name: ${{ github.ref }}
-        release_name: Release ${{ github.ref }}
-        draft: false
-        prerelease: false
-        
-    - name: Generate SHA256 checksums
-      run: |
-        find . -name "install.sh" -type f -exec sha256sum {} \; > checksums.txt
-        
-    - name: Upload checksums
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: ./checksums.txt
-        asset_name: checksums.txt
-        asset_content_type: text/plain
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Verify
+        run: make check-sync lint test test-apm
+      - name: Check version matches tag
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          for f in apm.yml packages/*/apm.yml; do
+            grep -q "^version: $v$" "$f" || { echo "$f is not at version $v"; exit 1; }
+          done
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes "Install: \`apm install architraceio/chronicle#$GITHUB_REF_NAME\`. See CHANGELOG.md."

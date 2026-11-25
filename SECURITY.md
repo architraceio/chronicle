@@ -12,16 +12,21 @@ We request that you do not publicly disclose the vulnerability until it has been
 
 ## Security Considerations
 
-Chronicle is a minimal project that only generates markdown files and runs shell scripts. It does not:
+Chronicle generates markdown files and runs shell scripts (bash + jq) as hooks inside your coding agent. It does not:
 
 - Collect telemetry or usage data
-- Connect to external services
-- Store or process sensitive information
-- Have any web components or user interfaces
+- Run a server, open ports, or have any web components
+- Require an account
+
+What it does that you should know about:
+
+- **Hooks execute code on your machine.** They are installed by APM; with APM's executables gate enabled they only run after `apm approve`. Codex and Gemini additionally require you to trust them.
+- **The judge sends conversation excerpts to a model.** On turns that match decision keywords, Chronicle runs your agent's own CLI (`claude -p`, `codex exec`, `gemini -p`, `agent -p`, `copilot -p`) with up to ~16k characters of the recent conversation plus your ADR titles. This goes to the same provider and under the same credentials your agent already uses; nothing goes anywhere else. Disable it with `"judge": {"via": "self"}` or `"capture": {"midSession": false}`.
+- **Local state** (`.chronicle/`) contains session ids, hashes and an activity log with decision titles. It is excluded from git by its own `.gitignore`.
 
 ## Dependencies
 
-Chronicle has no external dependencies beyond the shell scripts, which only use standard Unix utilities and `jq`.
+`bash`, `jq`, `git` and standard POSIX tools. Installation and updates go through [APM](https://github.com/microsoft/apm).
 
 ## Responsible Disclosure
 

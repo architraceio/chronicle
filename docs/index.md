@@ -1,33 +1,18 @@
-# Chronicle Documentation
+# Chronicle documentation
 
-Chronicle is an open-source companion for AI coding agents that captures 
-architectural and design decisions as ADR markdown files in your repository. 
-Local-first, no account, no telemetry.
-
-## Quick Start
-
-Install Chronicle in 60 seconds and create your first ADR in 3 minutes:
+Chronicle captures architectural and design decisions made with AI coding agents as ADR markdown files in your repository. Local-first, no account, no telemetry.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/architraceio/chronicle/main/install.sh | bash
+apm install architraceio/chronicle
 ```
 
-1. Run `claude` and use plan mode (Shift+Tab Shift+Tab)
-2. Accept a plan — your first ADR will appear in `docs/decisions/`
-3. Or run `/log-decision` to capture a decision manually
-
-## Overview
-
-Chronicle provides two adapters:
-- **Claude Code adapter**: Supports both automatic capture (plan acceptance + mid-session detection) and manual capture
-- **OpenCode adapter**: Supports manual capture only
+Approve or implement a plan, or settle a decision in conversation, and ADRs appear in `docs/decisions/`. Use `/log-decision` and `/chronicle-review` any time.
 
 ## Contents
 
-- [Getting Started](getting-started.md)
-- [How It Works](how-it-works.md)
+- [Getting started](getting-started.md)
+- [How it works](how-it-works.md)
+- [Agent support matrix and workarounds](harnesses.md)
 - [Customization](customization.md)
-- [Claude Code Adapter](claude-code.md)
-- [OpenCode Adapter](opencode.md)
-- [Why Use ADRs](why-adrs.md)
-- [Scaling Up](scaling-up.md)
+- [Why ADRs](why-adrs.md)
+- [Scaling up](scaling-up.md)

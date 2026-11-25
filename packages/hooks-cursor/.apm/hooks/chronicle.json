@@ -1,0 +1,61 @@
+{
+  "hooks": {
+    "sessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "./scripts/chronicle-hook --harness cursor session-start",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "beforeSubmitPrompt": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "./scripts/chronicle-hook --harness cursor prompt",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "postToolUse": [
+      {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "./scripts/chronicle-hook --harness cursor post-tool",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "afterAgentResponse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "./scripts/chronicle-hook --harness cursor reply",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "./scripts/chronicle-hook --harness cursor stop",
+            "timeout": 60,
+            "loop_limit": 1
+          }
+        ]
+      }
+    ]
+  }
+}

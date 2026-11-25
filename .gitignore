@@ -1,5 +1,9 @@
-.claude
-.opencode
-.chronicle.json
-*.chronicle.tmp
-docs/decisions
+# local agent settings
+.claude/settings.local.json
+
+# APM
+apm_modules/
+.apm-local/
+
+# Chronicle runtime state (also self-ignored)
+.chronicle/

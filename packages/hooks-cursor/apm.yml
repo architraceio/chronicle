@@ -1,0 +1,5 @@
+name: chronicle-hooks-cursor
+version: 0.2.0
+description: Chronicle hook wiring for Cursor
+license: MIT
+targets: [cursor]

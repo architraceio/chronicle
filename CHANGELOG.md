@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-25
+
+### Added
+- Distribution as an APM package (`apm install architraceio/chronicle`) with one core package and per-agent hook packages for Claude Code, Codex, Gemini CLI, Cursor and GitHub Copilot.
+- Shared hook engine `chronicle-hook`: keyword prefilter plus a headless judge through the agent's own CLI, a conversation window instead of only the last reply, one ADR per decision.
+- Plan capture that survives a broken workflow: plans are tracked when proposed and promoted on approval or on the first project edit.
+- Six independent loop guards, including a per-session cap and a fork guard for the judge.
+- `chronicle-adr` script for numbering, templates, supersede, index and a git `guard` (pre-commit or CI).
+- Skills `chronicle-adr`, `log-decision`, `chronicle-review`, `chronicle-status`; a shared rule for agents without full hook support; deferred delivery for Gemini.
+- Unit tests (`make test`) and an APM install test (`make test-apm`).
+
+### Changed
+- `.chronicle.json` version 2 (`capture`, `judge`, `guard`); version 1 files are migrated automatically.
+- ADR numbers are always 4 digits; example ADRs renamed accordingly.
+- Templates moved into the `chronicle-adr` skill; the lightweight template now carries date and status.
+
+### Removed
+- `install.sh` and `uninstall.sh` (use `apm install` / `apm uninstall`).
+- `claude-code/` and `opencode/` adapter directories.
+
+### Fixed
+- The v0.1 prefilter was a stub, and the prompt-hook judge ran on every turn in parallel with it, never saw the conversation and could loop.
+- Curl installs lost the templates (`installDir` pointed to a deleted temp directory).
+
 ## [0.1.0] - 2026-04-29
 
 ### Added
@@ -34,5 +58,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 - None
 
-[Unreleased]: https://github.com/architraceio/chronicle/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/architraceio/chronicle/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/architraceio/chronicle/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/architraceio/chronicle/releases/tag/v0.1.0

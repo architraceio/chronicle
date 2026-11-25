@@ -1,0 +1,5 @@
+name: chronicle-hooks-claude
+version: 0.2.0
+description: Chronicle hook wiring for Claude Code
+license: MIT
+targets: [claude]
