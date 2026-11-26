@@ -22,7 +22,7 @@ done
 
 allow() { printf '{}\n'; }
 
-# Loop guard #1: the judge's own CLI session must never run Chronicle logic.
+# Fork guard: the audit judge's own CLI session must never run Chronicle logic.
 if [ "${CHRONICLE_JUDGE:-}" = "1" ]; then allow; exit 0; fi
 command -v jq >/dev/null 2>&1 || { allow; exit 0; }
 
@@ -110,72 +110,26 @@ emit_context() { # emit_context <logical-event> <text>
   esac
 }
 
-emit_continue() { # make the agent keep working with <reason>
-  case "$HARNESS" in
-    claude|codex|copilot) jq -n --arg r "$1" '{decision:"block", reason:$r}' ;;
-    cursor) jq -n --arg r "$1" '{followup_message:$r}' ;;
-    *) emit_nudge "$1" ;;
-  esac
-}
-
-emit_nudge() { # user-visible hint only
-  case "$HARNESS" in
-    claude|codex|gemini) jq -n --arg m "$1" '{systemMessage:$m}' ;;
-    *) allow ;;
-  esac
-}
-
 # ---------------------------------------------------------------- state
-turn() { cat "$SDIR/turn" 2>/dev/null || echo 0; }
 turn_start() { cat "$SDIR/turn-start" 2>/dev/null || echo 0; }
-# True if an ADR was written since the previous stop of this session. That
-# covers the current turn and async continuations (e.g. a background
-# decision-logger whose completion arrives as a new turn). Reference point:
-# previous stop, else turn start, else a 10-minute window.
-adr_written_since() { # adr_written_since <prev-stop-epoch>
-  local last ref="$1"
-  last="$(cat "$STATE_ROOT/last-adr" 2>/dev/null || echo 0)"
-  [ -z "$ref" ] || [ "$ref" = "0" ] && ref="$(turn_start)"
-  [ "$ref" = "0" ] && ref=$(( $(date +%s) - 600 ))
-  [ "$last" -ge "$ref" ]
-}
-hash_text() { printf '%s' "$1" | cksum | cut -d' ' -f1; }
 
-add_flagged() { # add_flagged <decisions-json-array> <delivered:true|false>
-  local cur; cur="$(cat "$SDIR/flagged.json" 2>/dev/null || echo '[]')"
-  jq -c --argjson n "$1" --argjson d "$2" --arg ts "$(date +%s)" \
-    '. + ($n | map(. + {delivered:$d, ts:$ts}))' <<< "$cur" > "$SDIR/flagged.json"
-}
-take_undelivered() { # prints a bullet list and marks them delivered
-  local cur; cur="$(cat "$SDIR/flagged.json" 2>/dev/null || echo '[]')"
-  local list; list="$(jq -r '.[] | select(.delivered|not) | "- " + .title' <<< "$cur")"
-  [ -n "$list" ] || return 1
-  jq -c 'map(.delivered = true)' <<< "$cur" > "$SDIR/flagged.json"
-  printf '%s' "$list"
-}
-
-# ---------------------------------------------------------------- text extraction
-# Best-effort extraction of conversation text from the harness transcript.
-# Handles Claude Code, Codex rollout and Copilot event JSONL shapes.
-transcript_text() { # transcript_text <path> <from-line> -> "ROLE: text" lines
-  local p="$1" from="${2:-0}"
+# ---------------------------------------------------------------- reply text
+# The reply comes from documented hook fields. Only when a harness doesn't
+# provide one (Copilot; Claude/Codex if the field is empty) is the last
+# assistant message read from the transcript, accepting only that harness's
+# top-level assistant entries, never injected or copied request content.
+last_assistant_from_transcript() { # <path>
+  local p="$1" filter
   [ -n "$p" ] && [ -f "$p" ] || return 0
-  tail -n "+$((from + 1))" "$p" 2>/dev/null | jq -R -r '
-    (try fromjson catch null) | select(type=="object") |
-    ( .message.role? // .payload.role? // .role? //
-      (if .type=="user" or .type=="user.message" then "user"
-       elif .type=="assistant" or .type=="assistant.message" then "assistant" else null end) ) as $role |
-    select($role=="user" or $role=="assistant") |
-    ( .message.content? // .payload.content? // .data.content? // .content? ) as $c |
-    ( if ($c|type)=="string" then $c
-      elif ($c|type)=="array" then
-        [ $c[] | select(type=="object") | select((.type? // "text") | test("^(text|input_text|output_text)$")) | .text? // empty ] | join("\n")
-      else "" end ) as $t |
-    select(($t|length) > 0) | ($role | ascii_upcase) + ": " + $t' 2>/dev/null
-}
-transcript_lines() { [ -f "$1" ] && wc -l < "$1" | tr -d ' ' || echo 0; }
-last_assistant_from_transcript() {
-  transcript_text "$1" 0 | grep '^ASSISTANT: ' | tail -n 1 | sed 's/^ASSISTANT: //'
+  case "$HARNESS" in
+    claude)  filter='select(.type=="assistant" and (.isSidechain|not)) | .message.content
+                     | if type=="string" then . else ([.[]? | select(.type=="text") | .text] | join("\n")) end' ;;
+    codex)   filter='select(.type=="event_msg" and .payload.type=="agent_message") | .payload.message' ;;
+    copilot) filter='select(.type=="assistant.message") | .data.content' ;;
+    *) return 0 ;;
+  esac
+  jq -R -r "(try fromjson catch null) | select(type==\"object\") | ($filter) | select(type==\"string\" and length>0) | gsub(\"\\n\"; \" \")" \
+    < "$p" 2>/dev/null | tail -n 1
 }
 
 reply_text() {
@@ -184,23 +138,13 @@ reply_text() {
     claude|codex) t="$(field '.last_assistant_message')"
                   [ -z "$t" ] && t="$(last_assistant_from_transcript "$(field '.transcript_path')")" ;;
     gemini) t="$(field '.prompt_response')" ;;
-    cursor) t="$(cat "$SDIR/last-reply" 2>/dev/null)"
-            [ -z "$t" ] && t="$(last_assistant_from_transcript "$(field '.transcript_path')")" ;;
+    cursor) t="$(cat "$SDIR/last-reply" 2>/dev/null)" ;;
     copilot) t="$(last_assistant_from_transcript "$(field '.transcriptPath // .transcript_path')")" ;;
   esac
   printf '%s' "$t"
 }
 
-# ---------------------------------------------------------------- judge
-DEFAULT_KEYWORDS="let'?s (go with|use|pick|switch)|we('| wi)ll (use|go with|adopt|switch)|decided( to| on)?|decision is|going (with|to use)|chosen approach|(i|we)('d| would) (recommend|go with)|trade-?offs?|instead of|rather than|as opposed to|in favou?r of|switch(ed|ing)? (to|from)|migrat(e|ing) (to|from)|replace [a-z0-9._-]+ with|adopt(ed|ing)?|drop(ped|ping)? [a-z0-9._-]+ (for|in favou?r)|architectur(e|al)|(^|[^a-z])adrs?([^a-z]|$)"
-
-prefilter() { # prefilter <text>
-  local kw extra
-  extra="$(cfg '(.prefilterKeywords // []) | map(gsub("[.[\\]{}()*+?^$|\\\\]"; "\\\\\\(.)")) | join("|")')"
-  kw="$DEFAULT_KEYWORDS"; [ -n "$extra" ] && kw="$kw|$extra"
-  printf '%s' "$1" | grep -Eqi -- "$kw"
-}
-
+# ---------------------------------------------------------------- judge (audit mode only)
 judge_lock() {
   local l="$STATE_ROOT/judge.lock"
   mkdir -p "$STATE_ROOT" 2>/dev/null
@@ -365,31 +309,16 @@ on_session_start() {
     f="${d}pending-plan.json"; [ -f "$f" ] || continue
     notes="${notes}- an unimplemented plan from $(date -d "@$(jq -r .ts "$f")" +%F 2>/dev/null || echo "an earlier session")"$'\n'
   done
-  for d in "$STATE_ROOT"/*/; do
-    f="${d}flagged.json"; [ -f "$f" ] || continue
-    notes="${notes}$(jq -r '.[] | select(.delivered|not) | "- possible decision: " + .title' "$f" 2>/dev/null)"
-  done
   if [ -z "$notes" ]; then allow; return; fi
   emit_context session-start "Chronicle: there are unlogged items from earlier sessions:
 $notes
 If they were real decisions, offer the user to record them with /log-decision; otherwise ignore this note."
 }
 
-on_prompt() {
+on_prompt() { # remember the turn start and the user's prompt (for audit mode)
   ensure_state || { allow; return; }
-  echo $(( $(turn) + 1 )) > "$SDIR/turn"
   date +%s > "$SDIR/turn-start"
-  local list
-  case "$HARNESS" in
-    claude|codex|gemini)
-      if list="$(take_undelivered)"; then # Cursor/Copilot: prompt hooks can't add context
-        log_event '{"action":"deferred-delivery","via":"prompt"}'
-        emit_context prompt "Chronicle: your previous turn contained decisions that are not recorded yet:
-$list
-Before handling the new request, record each with the chronicle-adr skill (or decision-logger subagent), Status: Proposed unless clearly final."
-        return
-      fi ;;
-  esac
+  field '.prompt' > "$SDIR/last-prompt"
   allow
 }
 
@@ -428,17 +357,6 @@ on_post_tool() {
       return
     fi
   fi
-  # Deferred delivery on the next tool result, for any tool. Every harness can
-  # add context here; for Cursor and Copilot it is the only channel, because
-  # their prompt-submit hooks cannot add context.
-  local list
-  if list="$(take_undelivered)"; then
-    log_event '{"action":"deferred-delivery","via":"post-tool"}'
-    emit_context post-tool "Chronicle: unrecorded decisions from your previous turn:
-$list
-Record each with the chronicle-adr skill before continuing (Status: Proposed unless clearly final)."
-    return
-  fi
   allow
 }
 
@@ -448,104 +366,30 @@ on_reply() { # Cursor afterAgentResponse: remember the final text for the stop h
   allow
 }
 
+# Audit mode (judge.mode = "audit"): ask the judge whether the last exchange
+# settled a decision and log the verdict next to whether an ADR was written.
+# It never blocks, continues or messages the agent, so it cannot loop.
 on_stop() {
-  [ "$(cfg '.capture.midSession')" = "false" ] && { allow; return; }
-  # Loop guard #2: the harness says we are already continuing because of a stop hook.
-  if [ "$(field '.stop_hook_active // .stopHookActive')" = "true" ]; then allow; return; fi
+  allow
+  [ "$(cfg '.judge.mode // "off"')" = "audit" ] || return 0
+  # Continuations caused by some other stop hook are not a new exchange.
+  [ "$(field '.stop_hook_active // .stopHookActive')" = "true" ] && return 0
   if [ "$HARNESS" = "cursor" ]; then
-    [ "$(field '.loop_count')" != "" ] && [ "$(field '.loop_count')" != "0" ] && { allow; return; }
-    [ "$(field '.status')" != "" ] && [ "$(field '.status')" != "completed" ] && { allow; return; }
+    [ "$(field '.status')" != "" ] && [ "$(field '.status')" != "completed" ] && return 0
   fi
-  ensure_state || { allow; return; }
-  local t prev_stop; t="$(turn)"
-  prev_stop="$(cat "$SDIR/last-stop" 2>/dev/null || echo 0)"
-  date +%s > "$SDIR/last-stop"
-  # Loop guard #3: at most one block per user turn, independent of harness flags.
-  [ "$(cat "$SDIR/blocked" 2>/dev/null)" = "$t" ] && { allow; return; }
-
-  local tpath window reply offset total
-  tpath="$(field '.transcript_path // .transcriptPath')"
-  total="$(transcript_lines "$tpath")"
-  # Loop guard #4: an ADR was written since the previous stop (plan capture,
-  # the agent itself, or a background decision-logger that just finished).
-  if adr_written_since "$prev_stop"; then
-    echo "$total" > "$SDIR/offset"; log_event '{"action":"skip-adr-written"}'; allow; return
-  fi
-
+  ensure_state || return 0
+  local reply prompt window raw verdict="" written=false
   reply="$(reply_text)"
-  offset="$(cat "$SDIR/offset" 2>/dev/null || echo 0)"
-  [ "$offset" -gt "$total" ] 2>/dev/null && offset=0
-  window="$(transcript_text "$tpath" "$offset")"
-  if [ -n "$reply" ] && ! grep -qF -- "${reply:0:200}" <<< "$window"; then
-    window="${window}${window:+$'\n'}ASSISTANT: $reply"
+  [ -n "$reply" ] || return 0
+  prompt="$(cat "$SDIR/last-prompt" 2>/dev/null)"
+  window="USER: ${prompt:0:3000}"$'\n'"ASSISTANT: ${reply:0:5000}"
+  [ "$(cat "$STATE_ROOT/last-adr" 2>/dev/null || echo 0)" -ge "$(turn_start)" ] && written=true
+  if judge_lock; then
+    raw="$(run_judge "$(judge_prompt "$window")")" && verdict="$(parse_verdict "$raw")"
+    judge_unlock
   fi
-  [ -n "$window" ] || { allow; return; }
-  [ "${#window}" -gt 16000 ] && window="${window:$(( ${#window} - 16000 ))}"
-
-  local h; h="$(hash_text "${reply:-$window}")"
-  grep -qx "$h" "$SDIR/seen" 2>/dev/null && { allow; return; }
-
-  if ! prefilter "$window"; then log_event '{"action":"prefilter-miss"}'; allow; return; fi
-
-  local verdict="" via raw
-  via="$(cfg '.judge.via // "cli"')"
-  if [ "$via" = "cli" ]; then
-    if judge_lock; then
-      raw="$(run_judge "$(judge_prompt "$window")")" && verdict="$(parse_verdict "$raw")"
-      judge_unlock
-    fi
-  fi
-  echo "$h" >> "$SDIR/seen"
-  echo "$total" > "$SDIR/offset"
-
-  local mode; mode="$(cfg '.capture.mode // "auto"')"
-  if [ -z "$verdict" ]; then
-    local fb; fb="$(cfg '.judge.fallback // "self"')"
-    [ "$via" = "self" ] && fb="self"
-    log_event "$(jq -nc --arg v "$via" --arg f "$fb" '{action:"judge-unavailable", via:$v, fallback:$f}')"
-    case "$fb" in
-      self)
-        echo "$t" > "$SDIR/blocked"
-        local sb; sb=$(( $(cat "$SDIR/blocks" 2>/dev/null || echo 0) + 1 )); echo "$sb" > "$SDIR/blocks"
-        [ "$sb" -gt "$(cfg '.capture.maxBlocksPerSession // 5')" ] && mode="nudge"
-        if [ "$mode" = "nudge" ] || [ "$HARNESS" = "gemini" ]; then
-          emit_nudge "Chronicle: this turn may contain an architectural decision. Run /log-decision to record it."
-        else
-          emit_continue "Chronicle check: if this turn finalized an architectural or design decision that is not yet recorded in $(decisions_dir_rel), record it now with the decision-logger subagent (or the chronicle-adr skill), one ADR per decision, Status: Proposed unless clearly final. If not, stop without any further comment."
-        fi ;;
-      nudge) emit_nudge "Chronicle: this turn may contain an architectural decision. Run /log-decision to record it." ;;
-      *) allow ;;
-    esac
-    return
-  fi
-
-  log_event "$(jq -c '{action:"judged", decisions:.decisions}' <<< "$verdict")"
-  # Loop guard #5: never flag the same decision twice in a session.
-  local flagged; flagged="$(cat "$SDIR/flagged.json" 2>/dev/null || echo '[]')"
-  verdict="$(jq -c --argjson f "$flagged" \
-    '($f | map(.title | ascii_downcase)) as $old | .decisions |= map(select((.title | ascii_downcase) as $t | $old | index($t) | not))' <<< "$verdict")"
-  local n; n="$(jq '.decisions | length' <<< "$verdict")"
-  [ "$n" -gt 0 ] || { allow; return; }
-
-  echo "$t" > "$SDIR/blocked"
-  # Loop guard #6: hard cap on blocks per session; beyond it only nudge.
-  local blocks max
-  blocks=$(( $(cat "$SDIR/blocks" 2>/dev/null || echo 0) + 1 )); echo "$blocks" > "$SDIR/blocks"
-  max="$(cfg '.capture.maxBlocksPerSession // 5')"
-  [ "$blocks" -gt "$max" ] && mode="nudge"
-  local list
-  list="$(jq -r '.decisions[] | "- " + .title + " (Status: " + (if .final then "Accepted" else "Proposed" end) + ")"' <<< "$verdict")"
-  if [ "$mode" = "nudge" ] || [ "$HARNESS" = "gemini" ]; then
-    add_flagged "$(jq -c .decisions <<< "$verdict")" false
-    emit_nudge "Chronicle: unrecorded decision(s) detected:
-$list
-Run /log-decision to record them (Chronicle will also remind the agent on the next turn)."
-  else
-    add_flagged "$(jq -c .decisions <<< "$verdict")" true
-    emit_continue "Chronicle: this turn finalized decision(s) that are not recorded yet:
-$list
-Record each now with the decision-logger subagent (or the chronicle-adr skill): one ADR per decision, with the given status. Then briefly report the ADR path(s) and stop."
-  fi
+  if [ -z "$verdict" ]; then log_event '{"action":"audit-unavailable"}'; return 0; fi
+  log_event "$(jq -c --argjson w "$written" '{action:"audit", decisions:.decisions, adr_this_turn:$w}' <<< "$verdict")"
 }
 
 main() {

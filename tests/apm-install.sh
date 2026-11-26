@@ -50,8 +50,8 @@ has  "/chronicle-review command" .gemini/commands/chronicle-review.toml
 
 echo "== Cursor"
 for e in sessionStart beforeSubmitPrompt postToolUse afterAgentResponse stop; do jqok "hook $e" .cursor/hooks.json ".hooks.$e != null"; done
-jqok "stop loop_limit = 1"       .cursor/hooks.json '.hooks.stop[0].loop_limit == 1'
-jqok "postToolUse on every tool (deferred delivery)" .cursor/hooks.json '[.hooks.postToolUse[] | select(any(.hooks[]?; .command | test("chronicle-hook")))] | all(has("matcher") | not)'
+jqok "stop has no loop_limit (audit never continues)" .cursor/hooks.json '.hooks.stop[0] | has("loop_limit") | not'
+jqok "postToolUse on every tool (ADR write tracking)" .cursor/hooks.json '[.hooks.postToolUse[] | select(any(.hooks[]?; .command | test("chronicle-hook")))] | all(has("matcher") | not)'
 has  "rule"                      .cursor/rules/chronicle.mdc
 has  "agent"                     .cursor/agents/decision-logger.md
 

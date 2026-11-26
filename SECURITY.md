@@ -21,7 +21,7 @@ Chronicle generates markdown files and runs shell scripts (bash + jq) as hooks i
 What it does that you should know about:
 
 - **Hooks execute code on your machine.** They are installed by APM; with APM's executables gate enabled they only run after `apm approve`. Codex and Gemini additionally require you to trust them.
-- **The judge sends conversation excerpts to a model.** On turns that match decision keywords, Chronicle runs your agent's own CLI (`claude -p`, `codex exec`, `gemini -p`, `agent -p`, `copilot -p`) with up to ~16k characters of the recent conversation plus your ADR titles. This goes to the same provider and under the same credentials your agent already uses; nothing goes anywhere else. Disable it with `"judge": {"via": "self"}` or `"capture": {"midSession": false}`.
+- **Audit mode sends the last exchange to a model.** Only if you set `"judge": {"mode": "audit"}`: after each turn Chronicle runs your agent's own CLI (`claude -p`, `codex exec`, `gemini -p`, `agent -p`, `copilot -p`) with your last prompt, the agent's reply and your ADR titles. This goes to the same provider and under the same credentials your agent already uses; nothing goes anywhere else. It's off by default.
 - **Local state** (`.chronicle/`) contains session ids, hashes and an activity log with decision titles. It is excluded from git by its own `.gitignore`.
 
 ## Dependencies

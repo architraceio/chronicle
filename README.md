@@ -9,10 +9,11 @@ It is distributed as an [APM](https://github.com/microsoft/apm) package and work
 ## What it does
 
 - **Plans become ADRs.** When a plan is approved, or when you start implementing a plan you discussed (even if you skipped the approval dialog), Chronicle archives the plan and has the agent write **one ADR per decision** in it.
-- **Decisions made in conversation are caught.** At the end of each turn a free keyword filter checks for decision language. Only on a match does a cheap judge model (your agent's own CLI, e.g. `claude -p --model haiku`) confirm. If it finds an unrecorded decision, the agent records it before stopping.
+- **The agent records decisions as you make them.** Chronicle installs a short rule that every agent reads: when a design decision is settled, including a quick "ok, do that" or a library the agent picks while coding, it records an ADR in the same turn, using Chronicle's `decision-logger` agent or `chronicle-adr` skill.
 - **Manual capture is always available.** `/log-decision` records a decision, `/chronicle-review` sweeps the conversation for unrecorded ones, `/chronicle-status` shows what Chronicle has been doing.
 - **Deterministic bookkeeping.** Numbering, file names, templates, status changes and the index are handled by a script, not left to the model.
-- **Loop-safe by design.** Six independent guards make sure a hook can never trap the agent in a loop or spawn recursive judge runs. The worst case per user message is one judge call and one extra turn.
+- **Optional audit.** Want to know what the agent misses? Turn on audit mode and a cheap judge model (your agent's own CLI, e.g. `claude -p --model haiku`) checks each turn and logs decisions that got no ADR. It never interrupts the agent; `/chronicle-status` shows the result.
+- **No loops, nothing in your way.** Hooks only add context when a plan is implemented. They never block a turn or make the agent continue.
 
 ## Supported agents
 
@@ -21,11 +22,12 @@ What happens automatically depends on what each agent lets hooks do:
 | | Claude Code | Codex | Gemini CLI | Cursor | Copilot CLI | Copilot in VS Code | OpenCode |
 |---|---|---|---|---|---|---|---|
 | Plans turn into ADRs | ✅ | 📝 | ✅ | 📝 | ⚠️ | 📝 | 📝 |
-| Decisions made in chat are recorded | ✅ | ✅ | ✅ ¹ | ✅ | ✅ | ⚠️ ³ | 📝 |
+| Decisions made in chat are recorded | 📝 | 📝 ² | 📝 ² | 📝 | 📝 | 📝 | 📝 ² |
 | `/log-decision`, `/chronicle-review` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| One-time setup | none | trust hooks in `/hooks`, add the rule ² | accept trust prompt | none | none | none | add the rule ² |
+| Optional audit of missed decisions | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ⚠️ ³ | — |
+| One-time setup | none | add the rule ² | add the rule ², accept the hook trust prompt | none | none | none | add the rule ² |
 
-✅ automatic · 📝 the agent is instructed to do it (usually works, not guaranteed), plus the manual commands · ⚠️ expected to work, not tested yet · ¹ Gemini shows you a hint right away and the agent records it at its next step · ² Chronicle's rule has to be added to `AGENTS.md` once: [how](docs/getting-started.md#add-the-chronicle-rule-to-agentsmd-codex-opencode) · ³ VS Code agent hooks are in preview and read Chronicle's Copilot hooks; [not tested yet](docs/harnesses.md#github-copilot)
+✅ automatic, by a hook · 📝 the agent does it because Chronicle's rule tells it to (seen working in a live Claude Code session, not guaranteed); `/chronicle-review` catches what slipped through · ⚠️ expected to work, not tested yet · ² Chronicle's rule has to be added to `AGENTS.md` once: [how](docs/getting-started.md#add-the-chronicle-rule-to-agentsmd-codex-gemini-cli-opencode) · ³ VS Code agent hooks are in preview and read Chronicle's Copilot hooks; [not tested yet](Hdocs/getting-started.md#github-copilot)
 
 Only Claude Code has been tested end to end with a live agent so far. Details per agent: [agent support](docs/harnesses.md).
 
@@ -50,9 +52,9 @@ One-time extra steps for some agents:
 
 | Agent | Step |
 |---|---|
-| Codex | Trust the Chronicle hooks in `/hooks` (again after each update). |
-| Gemini CLI | Accept the hook trust prompt. |
-| Codex, OpenCode | Add Chronicle's rule to `AGENTS.md` with `apm compile`. If you already have an `AGENTS.md`, it needs a marked section first: see [Add the Chronicle rule to AGENTS.md](docs/getting-started.md#add-the-chronicle-rule-to-agentsmd-codex-opencode). |
+| Codex, Gemini CLI, OpenCode | Add Chronicle's rule to `AGENTS.md` with `apm compile` (Gemini also needs `@./AGENTS.md` in `GEMINI.md`). Without it the agent doesn't know it should record decisions. If you already have an `AGENTS.md`, it needs a marked section first: see [Add the Chronicle rule to AGENTS.md](docs/getting-started.md#add-the-chronicle-rule-to-agentsmd-codex-gemini-cli-opencode). |
+| Gemini CLI | Accept the hook trust prompt (plan capture). |
+| Codex | Only for audit mode: trust the Chronicle hooks in `/hooks` (again after each update). |
 | Any, with APM's executables gate on | `apm approve architraceio/chronicle` |
 
 Optional: run `/chronicle-status` once. It shows the config, offers to create `.chronicle.json`, and lets you pick a template.
@@ -62,7 +64,7 @@ Optional: run `/chronicle-status` once. It shows the config, offers to create `.
 Mostly: none. Work as usual.
 
 - Approve a plan (or say "go ahead" and start implementing) → ADRs appear in `docs/decisions/`, the plan in `docs/decisions/_plans/`.
-- Settle something in conversation ("let's go with SQLite instead of Redis") → the agent records it before ending the turn.
+- Settle something in conversation ("let's go with SQLite instead of Redis", or "ok, do that" to the agent's proposal) → the agent records it in the same turn.
 - `/log-decision [what you decided]` → record something by hand.
 - `/chronicle-review` → at the end of a session, find decisions that slipped through.
 - Review the ADRs in your diff like any other file, edit the prose, commit them with the code they explain.
@@ -99,9 +101,8 @@ See [`examples/decisions/`](examples/decisions/) for well-formed ADRs.
   "decisionsDir": "docs/decisions",
   "template": "adr-nygard",
   "archivePlans": true,
-  "capture": { "planAccept": true, "midSession": true, "mode": "auto", "maxBlocksPerSession": 5 },
-  "judge": { "via": "cli", "model": null, "fallback": "self", "timeoutSec": 20 },
-  "prefilterKeywords": [],
+  "capture": { "planAccept": true },
+  "judge": { "mode": "off", "model": null, "timeoutSec": 20 },
   "guard": { "mode": "warn" }
 }
 ```
@@ -115,14 +116,14 @@ apm update architraceio/chronicle
 apm uninstall architraceio/chronicle
 ```
 
-Uninstall removes Chronicle's hooks, scripts, skills, agents and commands, and leaves your other hooks untouched. It doesn't touch `AGENTS.md`: delete the Chronicle text from it yourself (see [above](docs/getting-started.md#add-the-chronicle-rule-to-agentsmd-codex-opencode)). Your ADRs, plans and `.chronicle.json` stay: they are your records.
+Uninstall removes Chronicle's hooks, scripts, skills, agents and commands, and leaves your other hooks untouched. It doesn't touch `AGENTS.md`: delete the Chronicle text from it yourself (see [above](docs/getting-started.md#add-the-chronicle-rule-to-agentsmd-codex-gemini-cli-opencode)). Your ADRs, plans and `.chronicle.json` stay: they are your records.
 
 ## Documentation
 
 - [Getting started](docs/getting-started.md)
-- [How it works](docs/how-it-works.md): capture flows, judge, loop safety
+- [How it works](docs/how-it-works.md): capture flows, the rule, audit mode
 - [Agent support in detail](docs/harnesses.md): full matrix, workarounds, per-agent notes
-- [Behavior reference](docs/behavior.md): every event, guard, message, file and log entry
+- [Behavior reference](docs/behavior.md): every event, message, file and log entry
 - [Customization](docs/customization.md)
 - [Why ADRs](docs/why-adrs.md)
 - [Scaling up](docs/scaling-up.md)

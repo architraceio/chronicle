@@ -1,43 +1,56 @@
 # Testing Chronicle
 
-Three layers. Layers 1 and 2 run in CI; layer 3 is done by hand before a release.
+Three layers:
+
+- **1 and 2 are automated** and are for people changing Chronicle. Run them from this repository; they need no agent, no account and no setup, and they create and delete their own temporary projects.
+- **3 is manual**: you install Chronicle into a scratch project, one per agent, and use the agent as normal. This is the only layer that shows how a real agent behaves.
 
 ## 1. Unit tests: `make test`
 
-`tests/run.sh` feeds hook payloads for each harness into `packages/engine/chronicle-hook` and checks the JSON it returns. The judge is replaced via `CHRONICLE_JUDGE_CMD`, so no network and no agent CLI is needed. Covered:
+`tests/run.sh` feeds hook payloads for each agent into `packages/engine/chronicle-hook` and checks the JSON it returns. The audit judge is replaced via `CHRONICLE_JUDGE_CMD`, so no network and no agent CLI is needed. Covered:
 
-- Stop: prefilter miss, judge yes / no / unavailable (self fallback), nudge mode, deferred delivery (exactly once; via the next tool result for Cursor and Copilot, whose prompt hooks can't add context), window from transcript (keyword only in a user message), garbage input → allow, judge timeout with `timeout` and with the shell watchdog used on macOS, keyword matching (`ADR` doesn't match `address`).
-- Loop guards, each on its own: `CHRONICLE_JUDGE=1`, `stop_hook_active`, one block per turn, ADR written since the previous stop (including the async `decision-logger` continuation seen in a live run), same title never flagged twice, block cap, judge lock, the judge's own session re-entering the hook.
+- Stop: with audit off, nothing is judged or logged; with audit on, the judge gets exactly the recorded prompt and the reply, the verdict and `adr_this_turn` are logged, and the hook always returns "allow" (judge yes, no, failing, timing out with `timeout` and with the shell watchdog used on macOS).
+- Fork guard: `CHRONICLE_JUDGE=1`, the judge lock, the judge's own session re-entering the hook; also `stop_hook_active`, an empty reply and garbage input.
+- Reply text: only from documented fields or, as a fallback, from the agent's own assistant entries in the transcript (Claude Code request copies, Codex `response_item`s and Copilot tool results are ignored).
 - Plans: pending on `PreToolUse(ExitPlanMode)`, promotion on approval and on the first project edit after a rejected dialog, edits outside the project don't promote, the latest plan revision is archived, no double promotion, `SessionStart` reminder for an unimplemented plan.
-- Per harness: Codex (`apply_patch` ADR detection), Gemini (never `deny`, `plan_path`, `AfterTool` delivery), Cursor (`afterAgentResponse` → `stop` → `followup_message`, `loop_count`, aborted), Copilot (camelCase payloads, transcript parsing).
+- Per agent: Codex (`apply_patch` ADR detection, `agent_message` fallback), Gemini (`prompt_response`, `plan_path`, `AfterTool` promotion, never `deny`), Cursor (`afterAgentResponse` → `stop`, aborted turns), Copilot (camelCase payloads, transcript parsing).
 - `chronicle-adr`: numbering with gaps, duplicate refusal, supersede, index, v1 config migration, guard in warn and block mode.
 
 `make lint` runs shellcheck over all scripts. `make check-sync` fails if a hook package's bundled engine drifted from `packages/engine/`. Run `make sync` after editing the engine.
 
 ## 2. APM install test: `make test-apm`
 
-`tests/apm-install.sh` installs the repository with APM 0.38.1 into a fixture project with `.claude`, `.codex`, `.gemini`, `.cursor`, `.github` and `.opencode`. It checks every deployed file and hook entry against the support matrix, including that a pre-existing user hook survives, that Gemini doesn't get a `SessionEnd` mapping, and that Cursor gets `loop_limit: 1` and Copilot the native hook format. It also runs the documented `AGENTS.md` setup: a hand-written `AGENTS.md` is left alone by default, and with `compilation.agents_md.mode: managed_section` the rule lands between the markers while your own text stays. It then runs `apm uninstall` and checks that only Chronicle's entries are gone.
+`tests/apm-install.sh` installs this repository with APM 0.38.1 into a temporary project with `.claude`, `.codex`, `.gemini`, `.cursor`, `.github` and `.opencode`. It checks every deployed file and hook entry against the support matrix, including that a pre-existing user hook survives, that Gemini doesn't get a `SessionEnd` mapping, and that Copilot gets the native hook format. It also runs the documented `AGENTS.md` setup: a hand-written `AGENTS.md` is left alone by default, and with `compilation.agents_md.mode: managed_section` the rule lands between the markers while your own text stays. It then runs `apm uninstall` and checks that only Chronicle's entries are gone. To test another APM version: `make test-apm APM=apm`.
 
-## 3. Live smoke tests (manual, per harness)
+## 3. Live tests (manual, per agent)
 
-Install into a scratch repository (`apm install /path/to/chronicle --target <harness>`), then:
+Create one scratch project per agent, outside any other repository, and install from your local checkout:
 
-| # | Do | Expect (`.chronicle/log.jsonl`, `docs/decisions/`) |
+```bash
+mkdir chronicle_test_claude && cd chronicle_test_claude && git init
+apm install /path/to/chronicle --target claude      # codex, gemini, cursor, copilot, opencode
+```
+
+For Codex, Gemini CLI and OpenCode, also add the rule to `AGENTS.md` ([how](docs/getting-started.md#add-the-chronicle-rule-to-agentsmd-codex-gemini-cli-opencode)). Start the agent from the project root, and watch `tail -F .chronicle/log.jsonl` in a second terminal. Then:
+
+| # | Do | Expect |
 |---|---|---|
-| L1 | Ask: *"Compare Redis vs SQLite for this CLI's cache, then decide: we'll go with SQLite instead of Redis. No code."* | one `judged` with 1 decision, one ADR, then `skip-adr-written`; no second judge call, no stray judge processes (`pgrep -fa "claude -p"`) |
-| L2 | Ask a question without a decision | `prefilter-miss`, no judge call |
+| L1 | *"Compare Redis vs SQLite for this CLI's cache, then decide: we'll go with SQLite instead of Redis. No code."* | the agent records one ADR in the same turn, on its own |
+| L1b | Ask for options ("Postgres or SQLite for the user store?"), then answer only *"ok, do that"* | one ADR for the chosen option |
+| L1c | *"Add input validation to the config loader"* in a project where that means picking a library | an ADR for the library choice, or a reason in the reply why it isn't one |
+| L2 | Ask a question without a decision | no ADR |
 | L3 | Plan mode: propose a plan, press Esc, ask a question, leave plan mode, say "go ahead" | `plan-pending`, then `plan-promoted` at the first edit; one ADR per decision in the plan plus one `_plans/` file |
 | L4 | Plan mode: propose a plan, reject it, end the session, start a new one | no ADR; the new session mentions the unimplemented plan |
-| L5 | Approve a plan whose final reply is full of decision words | ADRs from the plan only, no extra mid-session ADR |
-| L6 | Log out of the judge CLI (or remove it from `PATH`), repeat L1 | `judge-unavailable`, self-check fallback, still at most one extra turn |
+| L5 | Approve a plan | ADRs from the plan, no duplicates |
+| L7 | Set `"judge": {"mode": "audit"}`, repeat L1, L1b and L2, then run `/chronicle-status` | one `audit` entry per turn, none blocking; the status report lists no misses for L1/L1b |
 
 Status (0.2.0):
 
-| Harness | L1 | L2 | L3 | L4 | L5 | L6 |
-|---|---|---|---|---|---|---|
-| Claude Code | ✅ | ✅ | unit-tested only | unit-tested only | unit-tested only | unit-tested only |
-| Codex, Gemini, Cursor, Copilot | not yet run | | | | | |
-| OpenCode | manual capture only: check that `/log-decision` and `/chronicle-review` work | | | | | |
+| Agent | L1 | L1b | L1c | L2 | L3 | L4 | L5 | L7 |
+|---|---|---|---|---|---|---|---|---|
+| Claude Code | ✅ (agent recorded it before the end of the turn) | not yet run | not yet run | not yet run | unit-tested only | unit-tested only | unit-tested only | not yet run |
+| Codex, Gemini, Cursor, Copilot | not yet run | | | | | | | |
+| OpenCode | not yet run (L1, L1b, L2 only; check `/log-decision` and `/chronicle-review`) | | | | | | | |
 
 Verified: a GitHub install (`apm install "architraceio/chronicle#apm-package"`) resolves all sub-packages and deploys the same paths as a local install.
 
@@ -47,11 +60,11 @@ Live-test checklist: each item is an assumption the code relies on that only a r
 
 | Agent | Check |
 |---|---|
+| All | How reliably the agent follows the rule (L1, L1b, L1c, and over a longer session with audit mode). This is the main open question. |
 | Claude Code | `PreToolUse(ExitPlanMode)` fires when the plan dialog is rejected (L3, L4). The plan text is in `tool_response.plan` and the path in `planFilePath` (L5). |
-| Codex | `codex exec` accepts `-s read-only` and `-c features.hooks=false` (watch `judge-unavailable` in L1). The rollout transcript is parsed into the window. The hook timeout is in seconds. Hooks find the engine when Codex is started from a subdirectory. |
-| Gemini CLI | `systemMessage` is shown; reminders arrive via `AfterTool`/`BeforeAgent`. `exit_plan_mode` sends `plan_path` and the plan file is found (`GEMINI_PLANS_DIR`). The judge's `--output-format json` envelope has `.response`. |
-| Cursor | `afterAgentResponse` fires before `stop` and carries `.text`. `stop` sends `loop_count` and `status`. `postToolUse` without a matcher fires for every tool and `additional_context` reaches the model. The judge's JSON envelope has `.result`. |
-| Copilot CLI | Payload field names (`sessionId`, `transcriptPath`, `toolName`, `toolArgs`, `stopHookActive`). The transcript format and its last assistant message. Whether `preToolUse`/`postToolUse` fire for `exit_plan_mode`. The judge flags `-s --no-custom-instructions --no-ask-user`. |
+| Codex | The rule is read from `AGENTS.md`. For audit: `codex exec` accepts `-s read-only` and `-c features.hooks=false` (watch for `audit-unavailable`), `UserPromptSubmit` carries `prompt`, the hook timeout is in seconds, and hooks find the engine when Codex is started from a subdirectory. |
+| Gemini CLI | The rule is read through `GEMINI.md` → `AGENTS.md`. `exit_plan_mode` sends `plan_path` and the plan file is found (`GEMINI_PLANS_DIR`). For audit: the judge's `--output-format json` envelope has `.response`. |
+| Cursor | The rule in `.cursor/rules/` is applied. For audit: `afterAgentResponse` fires before `stop` and carries `.text`, `beforeSubmitPrompt` carries `prompt`, the judge's JSON envelope has `.result`. |
+| Copilot CLI | Payload field names (`sessionId`, `transcriptPath`, `toolName`, `toolArgs`, `prompt`). The transcript's `assistant.message` entries. Whether `preToolUse`/`postToolUse` fire for `exit_plan_mode`. The judge flags `-s --no-custom-instructions --no-ask-user`. |
 | Copilot in VS Code | Whether Chronicle's `.github/hooks` file runs there and with which payload. That no hooks run twice when `chat.useClaudeHooks` is off. |
 | macOS | The full unit suite under the system bash 3.2 and BSD tools (`grep -E`, `stat -f`, `date`, `pkill`). |
-| All | Detection quality over a real session: decisions missed (false negatives) and judge calls that found nothing (`judged` with an empty list). |

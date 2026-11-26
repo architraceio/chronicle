@@ -25,16 +25,16 @@ DEFAULT_CONFIG='{
   "decisionsDir": "docs/decisions",
   "template": "adr-nygard",
   "archivePlans": true,
-  "capture": { "planAccept": true, "midSession": true, "mode": "auto", "maxBlocksPerSession": 5 },
-  "judge": { "via": "cli", "model": null, "fallback": "self", "timeoutSec": 20 },
-  "prefilterKeywords": [],
+  "capture": { "planAccept": true },
+  "judge": { "mode": "off", "model": null, "timeoutSec": 20 },
   "guard": { "mode": "warn", "paths": [
     "package.json", "go.mod", "pyproject.toml", "requirements*.txt", "Cargo.toml",
     "pom.xml", "build.gradle*", "Gemfile", "composer.json",
     "Dockerfile*", "docker-compose*", "*.tf", ".github/workflows/*" ] }
 }'
 
-# Effective config: defaults deep-merged with .chronicle.json (v1 keys migrated).
+# Effective config: defaults deep-merged with .chronicle.json (v1 keys migrated,
+# keys of earlier 0.2 previews dropped).
 config() {
   local user='{}'
   if [ -f "$CONFIG_FILE" ]; then user="$(jq -c . "$CONFIG_FILE" 2>/dev/null)" || die "invalid JSON in $CONFIG_FILE"; fi
@@ -42,12 +42,11 @@ config() {
     # v1 -> v2 migration
     ($u
       | if (.stopHook? // null) != null then
-          .capture.midSession = (.stopHook.enabled != false)
-          | .prefilterKeywords = (.prefilterKeywords // .stopHook.prefilterKeywords // [])
-          | .judge.model = (.judge.model // .stopHook.judgeModel // null)
+          .judge.model = (.judge.model // .stopHook.judgeModel // null)
           | del(.stopHook)
         else . end
-      | del(.installDir, .agents)) as $m
+      | del(.installDir, .agents, .prefilterKeywords, .capture.midSession?, .capture.mode?,
+            .capture.maxBlocksPerSession?, .judge.via?, .judge.fallback?)) as $m
     | $d * $m | .version = 2'
 }
 cfg() { config | jq -r "$1"; }

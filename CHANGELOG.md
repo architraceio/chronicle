@@ -11,17 +11,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Distribution as an APM package (`apm install architraceio/chronicle`) with one core package and per-agent hook packages for Claude Code, Codex, Gemini CLI, Cursor and GitHub Copilot.
-- Shared hook engine `chronicle-hook`: keyword prefilter plus a headless judge through the agent's own CLI, a conversation window instead of only the last reply, one ADR per decision.
+- Rule-first capture: a shared rule, installed for every agent, tells the agent to record each settled decision in the same turn (including quick acceptances and choices made while implementing), one ADR per decision.
+- Shared hook engine `chronicle-hook` for plan capture and ADR write tracking. It never blocks a turn or makes the agent continue.
+- Optional audit mode (`"judge": {"mode": "audit"}`): after each turn a small model, run through the agent's own CLI, checks the last prompt and reply and logs decisions it sees and whether an ADR was written. `/chronicle-status` lists possible misses.
 - Plan capture that survives a broken workflow: plans are tracked when proposed and promoted on approval or on the first project edit.
-- Six independent loop guards, including a per-session cap and a fork guard for the judge.
+- Fork guard for the audit judge: `CHRONICLE_JUDGE=1`, an empty working directory, hooks disabled, a single-judge lock.
 - `chronicle-adr` script for numbering, templates, supersede, index and a git `guard` (pre-commit or CI).
-- Skills `chronicle-adr`, `log-decision`, `chronicle-review`, `chronicle-status`; a shared rule for agents without full hook support; deferred delivery of reminders on the next prompt or tool result (Gemini always, every agent in nudge mode).
+- Skills `chronicle-adr`, `log-decision`, `chronicle-review`, `chronicle-status` (which also checks that the agent can see the rule).
 - Portable judge timeout: coreutils `timeout` where available, otherwise a shell watchdog (macOS).
 - Unit tests (`make test`) and an APM install test (`make test-apm`).
 - Docs: a simplified agent support table in the README and getting started guide, the detailed matrix in `docs/harnesses.md`, and an in-depth behavior reference in `docs/behavior.md`.
 
 ### Changed
-- `.chronicle.json` version 2 (`capture`, `judge`, `guard`); version 1 files are migrated automatically.
+- `.chronicle.json` version 2 (`capture.planAccept`, `judge`, `guard`); version 1 files are migrated automatically.
+- Before release, the end-of-turn keyword prefilter, blocking judge, deferred reminders, nudge mode and loop guards 2–6 were dropped in favour of the rule. In a live test the agent had already started recording before the hook ran; the keyword filter missed most real phrasings and matched ordinary ones; and reading agent transcripts pulled injected, non-conversation text (including private context) into the judge. The judge now only reads the prompt and reply from documented hook fields.
 - ADR numbers are always 4 digits; example ADRs renamed accordingly.
 - Templates moved into the `chronicle-adr` skill; the lightweight template now carries date and status.
 

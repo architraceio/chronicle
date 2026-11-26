@@ -34,7 +34,7 @@ You need `bash`, `jq`, `git` and [uv](https://docs.astral.sh/uv/) (used to run s
 - `packages/engine/`: the shared hook engine. **Edit it here only**, then run `make sync` to copy it into each `packages/hooks-<agent>/`.
 - `packages/hooks-<agent>/`: per-agent hook wiring (`targets:` restricts each to its agent).
 
-If you change what the engine does (events, guards, messages, state files, log actions), update [docs/behavior.md](docs/behavior.md) as well, and the support tables if an agent's support changes (README, `docs/getting-started.md`, `docs/index.md`, `docs/harnesses.md`).
+If you change what the engine does (events, messages, state files, log actions, the rule), update [docs/behavior.md](docs/behavior.md) as well, and the support tables if an agent's support changes (README, `docs/getting-started.md`, `docs/index.md`, `docs/harnesses.md`).
 
 `make all` syncs, checks the sync, lints and runs the unit tests. `make test-apm` installs the package into a fixture project with APM. See [TESTING.md](TESTING.md) for the live smoke tests.
 

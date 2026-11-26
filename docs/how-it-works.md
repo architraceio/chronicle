@@ -1,6 +1,6 @@
 # How it works
 
-This is the overview. The [behavior reference](behavior.md) covers every event, guard, message, state file and log entry in detail.
+This is the overview. The [behavior reference](behavior.md) covers every event, message, state file and log entry in detail.
 
 Chronicle has three parts:
 
@@ -18,32 +18,21 @@ Chronicle has three parts:
 3. **On promotion** Chronicle re-reads the plan file, so later revisions count, and archives it to `<decisionsDir>/_plans/`. It then tells the agent to record **one ADR per decision** in the plan, Status Accepted, linked to the archive. This is extra context; it doesn't interrupt the turn.
 4. A plan that is never implemented produces no ADR. You get a reminder at the next session start.
 
-## Mid-session capture
+## Decisions made in conversation
 
-At the end of every turn (`Stop`, `AfterAgent`, `stop`, `agentStop`):
+The agent records them itself. The rule Chronicle installs tells it to record each settled design decision in the same turn, with the `decision-logger` subagent or the `chronicle-adr` skill. That covers a choice you state ("let's go with SQLite"), a short acceptance of the agent's proposal ("ok, do that") and choices the agent makes while implementing (a new dependency, a library, a data model). No hook is involved, so this works the same in every agent that sees the rule, including OpenCode.
 
-1. **Guards** run first (see below).
-2. **Window.** The conversation since the last verdict, from the transcript where available (user messages included), plus the final reply, up to 16k characters.
-3. **Prefilter.** A case-insensitive keyword regex ("let's go with", "instead of", "trade-off", "decided", …, plus your `prefilterKeywords`). No match → done. This costs nothing and is what happens on most turns.
-4. **Judge.** Your agent's CLI with a small model, run in an empty temp directory with `CHRONICLE_JUDGE=1` and hooks disabled where possible. It returns `{"decisions":[{"title","final"}]}` and ignores decisions already in your ADR list.
-5. **Result.** If there are new decisions, the agent is asked to record them now: Status Accepted if final, otherwise Proposed. On Gemini, or with `capture.mode: "nudge"`, you get a hint, and the agent gets the reminder at the next tool call or prompt. Cursor and Copilot can't show hints, and their prompt hooks can't add context, so there the reminder comes with the next tool result.
+Earlier designs had an end-of-turn hook with a keyword filter and a judge that made the agent continue. In live tests the agent had already started `decision-logger` before the hook ran, and the keyword filter missed most real phrasings while matching ordinary ones. So the hook no longer decides anything.
 
-Everything Chronicle does is logged to `.chronicle/log.jsonl`. `/chronicle-status` summarizes it.
+What slips through is caught by:
 
-## Loop safety
+- `/chronicle-review`: the agent goes through the conversation, lists decisions without an ADR and records the ones you pick. Use it at the end of longer sessions.
+- `chronicle-adr guard`: a git hook or CI step that warns when dependency manifests, Dockerfiles, IaC or CI config change without a new ADR.
+- **Audit mode** (optional, `"judge": {"mode": "audit"}`): at the end of each turn, a small model reads your last message and the agent's reply and logs the decisions it sees and whether an ADR was written. It never messages or blocks the agent. `/chronicle-status` lists possible misses. Use it to find out how well the rule works for your agent and your way of working.
 
-A blocking end-of-turn hook makes the agent continue, and the continuation ends in another stop. A judge that is itself an agent session can trigger the same hooks. Chronicle guards against each of these separately:
+The audit judge is your agent's CLI with a small model, run in an empty temp directory with `CHRONICLE_JUDGE=1` and hooks disabled where possible, under a single-judge lock, so its own session can't run Chronicle again. It reads only text from documented hook fields (your prompt, the agent's reply), not the transcript.
 
-| # | Guard | Prevents |
-|---|---|---|
-| 1 | `CHRONICLE_JUDGE=1` makes the engine exit immediately; the judge also runs outside the project with hooks disabled, under a single-judge lock | the judge's own session triggering a judge (fork bomb) |
-| 2 | the harness flag (`stop_hook_active`, Cursor `loop_count`/`loop_limit: 1`) | block → continue → block |
-| 3 | at most one block per user turn (own turn counter) | the same, independent of the harness flag |
-| 4 | skip if an ADR was written since the previous stop | double capture after a plan, and re-judging after a background `decision-logger` reports back |
-| 5 | never flag the same decision title twice per session | repeated reminders if the agent ignores one |
-| 6 | at most `capture.maxBlocksPerSession` blocks (default 5), then hints only | any remaining runaway case |
-
-Any internal error in the engine results in "allow": Chronicle can fail, but it can't wedge your agent.
+Everything Chronicle does is logged to `.chronicle/log.jsonl`. `/chronicle-status` summarizes it. Any internal error in the engine results in "allow": Chronicle can fail, but it can't wedge your agent.
 
 ## Bookkeeping
 
