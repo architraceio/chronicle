@@ -36,6 +36,7 @@ for e in SessionStart UserPromptSubmit PreToolUse PostToolUse Stop; do
   jqok "hook $e"                 .claude/settings.json ".hooks.$e | map(.hooks[].command) | any(test(\"chronicle-hook\"))"
 done
 [ -x "$P/.claude/hooks/hooks-claude/scripts/chronicle-hook" ] && ok "engine executable" || fail "engine executable"
+grep -q 'in the same turn' "$P/.claude/rules/chronicle.md" 2>/dev/null && ok "rule (current text)" || fail "rule (current text)"
 
 echo "== Codex"
 has  "agent (toml)"              .codex/agents/decision-logger.toml
@@ -45,14 +46,15 @@ for e in SessionStart UserPromptSubmit PostToolUse Stop; do jqok "hook $e" .code
 echo "== Gemini CLI"
 for e in SessionStart BeforeAgent BeforeTool AfterTool AfterAgent; do jqok "hook $e" .gemini/settings.json ".hooks.$e != null"; done
 jqok "Stop not mapped to SessionEnd" .gemini/settings.json '.hooks.SessionEnd == null'
+jqok "timeouts converted to milliseconds" .gemini/settings.json '[.hooks.AfterAgent[].hooks[] | select(.command | test("chronicle-hook")) | .timeout] == [60000]'
 has  "/log-decision command"     .gemini/commands/log-decision.toml
 has  "/chronicle-review command" .gemini/commands/chronicle-review.toml
 
 echo "== Cursor"
 for e in sessionStart beforeSubmitPrompt postToolUse afterAgentResponse stop; do jqok "hook $e" .cursor/hooks.json ".hooks.$e != null"; done
 jqok "stop has no loop_limit (audit never continues)" .cursor/hooks.json '.hooks.stop[0] | has("loop_limit") | not'
-jqok "postToolUse on every tool (ADR write tracking)" .cursor/hooks.json '[.hooks.postToolUse[] | select(any(.hooks[]?; .command | test("chronicle-hook")))] | all(has("matcher") | not)'
-has  "rule"                      .cursor/rules/chronicle.mdc
+jqok "postToolUse matches Write (ADR write tracking)" .cursor/hooks.json '[.hooks.postToolUse[] | select(any(.hooks[]?; .command | test("chronicle-hook")))] | all(.matcher == "Write")'
+grep -q 'in the same turn' "$P/.cursor/rules/chronicle.mdc" 2>/dev/null && ok "rule (current text)" || fail "rule (current text)"
 has  "agent"                     .cursor/agents/decision-logger.md
 
 echo "== Copilot"
@@ -60,7 +62,7 @@ f="$(find "$P/.github/hooks" -maxdepth 1 -name "*chronicle*.json" 2>/dev/null | 
 [ -n "$f" ] && ok "hook file" || fail "hook file"
 for e in sessionStart userPromptSubmitted preToolUse postToolUse agentStop; do jqok "hook $e (native format)" "$f" ".hooks.${e}[0].bash | test(\"chronicle-hook\")"; done
 has  "agent"                     .github/agents/decision-logger.agent.md
-has  "rule"                      .github/instructions/chronicle.instructions.md
+grep -q 'in the same turn' "$P/.github/instructions/chronicle.instructions.md" 2>/dev/null && ok "rule (current text)" || fail "rule (current text)"
 has  "/log-decision prompt"      .github/prompts/log-decision.prompt.md
 
 echo "== OpenCode"
@@ -80,6 +82,8 @@ printf '\n<!-- apm:start -->\n<!-- apm:end -->\n\nFooter.\n' >> "$P/AGENTS.md"
 grep -q 'Keep me.' "$P/AGENTS.md" && grep -q 'Footer.' "$P/AGENTS.md" && ok "own text kept" || fail "own text kept"
 sed -n '/apm:start/,/apm:end/p' "$P/AGENTS.md" | grep -q 'Architectural decisions (Chronicle)' \
   && ok "rule written between markers" || fail "rule written between markers"
+grep -qE '@(\./)?AGENTS\.md' "$P/GEMINI.md" 2>/dev/null \
+  && ok "GEMINI.md generated with AGENTS.md import" || fail "GEMINI.md generated with AGENTS.md import" "$(head -20 "$P/GEMINI.md" 2>&1)"
 
 echo "== apm uninstall"
 # shellcheck disable=SC2086

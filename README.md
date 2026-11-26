@@ -27,13 +27,13 @@ What happens automatically depends on what each agent lets hooks do:
 | Optional audit of missed decisions | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ⚠️ ³ | — |
 | One-time setup | none | add the rule ² | add the rule ², accept the hook trust prompt | none | none | none | add the rule ² |
 
-✅ automatic, by a hook · 📝 the agent does it because Chronicle's rule tells it to (seen working in a live Claude Code session, not guaranteed); `/chronicle-review` catches what slipped through · ⚠️ expected to work, not tested yet · ² Chronicle's rule has to be added to `AGENTS.md` once: [how](docs/getting-started.md#add-the-chronicle-rule-to-agentsmd-codex-gemini-cli-opencode) · ³ VS Code agent hooks are in preview and read Chronicle's Copilot hooks; [not tested yet](Hdocs/getting-started.md#github-copilot)
+✅ automatic, by a hook · 📝 the agent does it because Chronicle's rule tells it to (seen working in a live Claude Code session, not guaranteed); `/chronicle-review` catches what slipped through · ⚠️ expected to work, not tested yet · ² Chronicle's rule has to be added to `AGENTS.md` once: [how](docs/getting-started.md#add-the-chronicle-rule-to-agentsmd-codex-gemini-cli-opencode) · ³ VS Code's Copilot agent reads Chronicle's Copilot hooks; [not tested yet](docs/harnesses.md#github-copilot)
 
 Only Claude Code has been tested end to end with a live agent so far. Details per agent: [agent support](docs/harnesses.md).
 
 ## Requirements
 
-- [APM](https://github.com/microsoft/apm) ≥ 0.38 (`pip install apm-cli`, or run it via `uvx --from apm-cli apm`)
+- [APM](https://github.com/microsoft/apm) ≥ 0.39 (`pip install apm-cli`, or run it via `uvx --from apm-cli apm`). Older versions don't install the rule for Claude Code.
 - `bash` (3.2 or later), `jq`, `git`
 - Linux, macOS or Windows with WSL. The hooks are bash scripts, so agents running natively on Windows can't run them; the skills and manual commands still work there. Tested on Linux so far.
 - One or more supported agents

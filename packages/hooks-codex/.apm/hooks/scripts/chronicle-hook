@@ -91,9 +91,7 @@ log_event() { # log_event <json-object-string>
 native_event() {
   case "$HARNESS:$1" in
     gemini:post-tool) echo AfterTool ;;
-    gemini:prompt) echo BeforeAgent ;;
     *:post-tool) echo PostToolUse ;;
-    *:prompt) echo UserPromptSubmit ;;
     *:session-start) echo SessionStart ;;
   esac
 }
@@ -114,18 +112,20 @@ emit_context() { # emit_context <logical-event> <text>
 turn_start() { cat "$SDIR/turn-start" 2>/dev/null || echo 0; }
 
 # ---------------------------------------------------------------- reply text
-# The reply comes from documented hook fields. Only when a harness doesn't
-# provide one (Copilot; Claude/Codex if the field is empty) is the last
-# assistant message read from the transcript, accepting only that harness's
-# top-level assistant entries, never injected or copied request content.
+# The reply comes from documented hook fields. Only Copilot (whose agentStop
+# has no reply field) and older Claude Code versions (without
+# last_assistant_message) read the last assistant message from the transcript,
+# accepting only the main agent's own assistant entries, never injected or
+# copied request content. Codex always sends last_assistant_message; null means
+# the turn produced no text, so there is nothing to fall back to.
 last_assistant_from_transcript() { # <path>
   local p="$1" filter
   [ -n "$p" ] && [ -f "$p" ] || return 0
   case "$HARNESS" in
     claude)  filter='select(.type=="assistant" and (.isSidechain|not)) | .message.content
                      | if type=="string" then . else ([.[]? | select(.type=="text") | .text] | join("\n")) end' ;;
-    codex)   filter='select(.type=="event_msg" and .payload.type=="agent_message") | .payload.message' ;;
-    copilot) filter='select(.type=="assistant.message") | .data.content' ;;
+    copilot) filter='select(.type=="assistant.message" and (.ephemeral|not) and (.agentId == null)
+                       and (.data.parentToolCallId == null)) | .data.content' ;;
     *) return 0 ;;
   esac
   jq -R -r "(try fromjson catch null) | select(type==\"object\") | ($filter) | select(type==\"string\" and length>0) | gsub(\"\\n\"; \" \")" \
@@ -135,8 +135,11 @@ last_assistant_from_transcript() { # <path>
 reply_text() {
   local t=""
   case "$HARNESS" in
-    claude|codex) t="$(field '.last_assistant_message')"
-                  [ -z "$t" ] && t="$(last_assistant_from_transcript "$(field '.transcript_path')")" ;;
+    claude) t="$(field '.last_assistant_message')"
+            if [ -z "$t" ] && [ "$(jq -r 'has("last_assistant_message")' <<< "$INPUT")" != "true" ]; then
+              t="$(last_assistant_from_transcript "$(field '.transcript_path')")"
+            fi ;;
+    codex) t="$(field '.last_assistant_message')" ;;
     gemini) t="$(field '.prompt_response')" ;;
     cursor) t="$(cat "$SDIR/last-reply" 2>/dev/null)" ;;
     copilot) t="$(last_assistant_from_transcript "$(field '.transcriptPath // .transcript_path')")" ;;
@@ -233,13 +236,15 @@ judge_prompt() { # judge_prompt <window>
 # ---------------------------------------------------------------- plans
 plan_from_input() { # sets PLAN_TEXT and PLAN_PATH (call directly, not in $(...))
   PLAN_TEXT=""
-  PLAN_PATH="$(field '.tool_input.planFilePath // .tool_response.filePath // .tool_input.plan_path // .tool_input.plan_filename')"
+  PLAN_PATH="$(field '.tool_input.planFilePath // .tool_response.filePath // .tool_input.plan_filename')"
   if [ -z "$PLAN_PATH" ]; then
     PLAN_PATH="$(jq -r '(.toolArgs // empty) | (if type=="string" then (try fromjson catch {}) else . end) | .planFilePath // .plan_path // empty' <<< "$INPUT" 2>/dev/null)"
   fi
+  # Relative paths: project root first, then Gemini's plans directory (the
+  # order Gemini itself resolves plan_filename in).
   if [ -n "$PLAN_PATH" ] && [ "${PLAN_PATH#/}" = "$PLAN_PATH" ]; then
-    if [ -n "${GEMINI_PLANS_DIR:-}" ] && [ -f "$GEMINI_PLANS_DIR/$PLAN_PATH" ]; then PLAN_PATH="$GEMINI_PLANS_DIR/$PLAN_PATH"
-    else PLAN_PATH="$PROJECT_DIR/$PLAN_PATH"; fi
+    if [ -f "$PROJECT_DIR/$PLAN_PATH" ] || [ -z "${GEMINI_PLANS_DIR:-}" ]; then PLAN_PATH="$PROJECT_DIR/$PLAN_PATH"
+    else PLAN_PATH="$GEMINI_PLANS_DIR/$PLAN_PATH"; fi
   fi
   if [ "$HARNESS" = "copilot" ] && [ -z "$PLAN_PATH" ] && [ -f "$HOME/.copilot/session-state/$SESSION/plan.md" ]; then
     PLAN_PATH="$HOME/.copilot/session-state/$SESSION/plan.md"

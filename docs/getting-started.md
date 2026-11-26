@@ -1,6 +1,6 @@
 # Getting started
 
-1. **Install APM** (once per machine): `pip install apm-cli`, or use `uvx --from apm-cli apm …` without installing.
+1. **Install APM** 0.39 or later (once per machine): `pip install apm-cli`, or use `uvx --from apm-cli apm …` without installing. Older versions don't install the rule for Claude Code.
 2. **Add Chronicle** from your project root:
    ```bash
    apm install architraceio/chronicle
@@ -24,7 +24,7 @@
 | Optional audit of missed decisions | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ⚠️ ³ | — |
 | One-time setup | none | add the rule ² | add the rule ², accept the hook trust prompt | none | none | none | add the rule ² |
 
-✅ automatic, by a hook · 📝 the agent does it because Chronicle's rule tells it to (seen working in a live Claude Code session, not guaranteed); `/chronicle-review` catches what slipped through · ⚠️ expected to work, not tested yet · ² Chronicle's rule has to be added to `AGENTS.md` once: [how](#add-the-chronicle-rule-to-agentsmd-codex-gemini-cli-opencode) · ³ VS Code agent hooks are in preview and read Chronicle's Copilot hooks; [not tested yet](H#github-copilot)
+✅ automatic, by a hook · 📝 the agent does it because Chronicle's rule tells it to (seen working in a live Claude Code session, not guaranteed); `/chronicle-review` catches what slipped through · ⚠️ expected to work, not tested yet · ² Chronicle's rule has to be added to `AGENTS.md` once: [how](#add-the-chronicle-rule-to-agentsmd-codex-gemini-cli-opencode) · ³ VS Code's Copilot agent reads Chronicle's Copilot hooks; [not tested yet](harnesses.md#github-copilot)
 
 Only Claude Code has been tested end to end with a live agent so far. Details per agent: [agent support](harnesses.md).
 

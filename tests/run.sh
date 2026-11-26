@@ -115,8 +115,11 @@ printf '%s\n' \
   '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Real reply."}]}}' \
   '{"type":"api-request-blob","message":{"role":"assistant","content":[{"type":"text","text":"INJECTED again"}]}}' > "$TMP/t1.jsonl"
 hook claude stop "{\"session_id\":\"t1\",\"transcript_path\":\"$TMP/t1.jsonl\"}" "$JUDGE_NO" >/dev/null
+# (no last_assistant_message field at all: older Claude Code)
 grep -q 'ASSISTANT: Real reply.' "$JUDGE_IN" && ! grep -q INJECTED "$JUDGE_IN" \
   && ok "claude: transcript fallback ignores request blobs" || fail "claude: transcript fallback ignores request blobs" "$(cat "$JUDGE_IN")"
+hook claude stop "{\"session_id\":\"t2\",\"transcript_path\":\"$TMP/t1.jsonl\",\"last_assistant_message\":\"\"}" "$JUDGE_NEVER" >/dev/null
+judge_not_called "claude: empty last_assistant_message -> no fallback, no judge call"
 
 echo "== engine: plans (Claude Code)"
 new_project
@@ -157,12 +160,8 @@ grep -q 'USER: Use SQLite?' "$JUDGE_IN" && ok "codex: prompt recorded" || fail "
 out="$(hook codex post-tool "{\"session_id\":\"c1\",\"tool_name\":\"apply_patch\",\"tool_input\":{\"input\":\"*** Begin Patch\\n*** Add File: docs/decisions/0002-y.md\\n+x\\n*** End Patch\"}}")"
 expect "codex: apply_patch ADR path detected" '. == {}' "$out"
 [ -f "$P/.chronicle/state/last-adr" ] && ok "codex: ADR write marks last-adr" || fail "codex: ADR write marks last-adr" "missing"
-printf '%s\n' \
-  '{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"INJECTED"}]}}' \
-  '{"type":"event_msg","payload":{"type":"agent_message","message":"Codex reply."}}' > "$TMP/cx.jsonl"
-hook codex stop "{\"session_id\":\"c2\",\"transcript_path\":\"$TMP/cx.jsonl\",\"last_assistant_message\":null}" "$JUDGE_NO" >/dev/null
-grep -q 'ASSISTANT: Codex reply.' "$JUDGE_IN" && ! grep -q INJECTED "$JUDGE_IN" \
-  && ok "codex: transcript fallback reads agent_message only" || fail "codex: transcript fallback reads agent_message only" "$(cat "$JUDGE_IN")"
+hook codex stop "{\"session_id\":\"c2\",\"transcript_path\":\"$TMP/none.jsonl\",\"last_assistant_message\":null}" "$JUDGE_NEVER" >/dev/null
+judge_not_called "codex: null last_assistant_message -> no judge call"
 
 echo "== engine: Gemini CLI"
 new_project; audit_on
@@ -172,9 +171,15 @@ expect "gemini: audit -> allow (never deny)" '. == {}' "$out"
 grep -q "ASSISTANT: $DECISION_MSG" "$JUDGE_IN" && ok "gemini: reply from prompt_response" || fail "gemini: reply from prompt_response" "$(cat "$JUDGE_IN")"
 new_project
 mkdir -p "$P/plans"; printf '# Gemini plan\n\nUse Postgres.\n' > "$P/plans/p.md"
-hook gemini pre-tool '{"session_id":"g2","tool_name":"exit_plan_mode","tool_input":{"plan_path":"plans/p.md"}}' >/dev/null
+hook gemini pre-tool '{"session_id":"g2","tool_name":"exit_plan_mode","tool_input":{"plan_filename":"plans/p.md"}}' >/dev/null
 out="$(hook gemini post-tool "{\"session_id\":\"g2\",\"tool_name\":\"write_file\",\"tool_input\":{\"file_path\":\"$P/db.py\"}}")"
-expect "gemini: plan_path read + promoted on first write" '.hookSpecificOutput.hookEventName == "AfterTool" and (.hookSpecificOutput.additionalContext | test("approved plan"))' "$out"
+expect "gemini: plan_filename (project-relative) read + promoted on first write" '.hookSpecificOutput.hookEventName == "AfterTool" and (.hookSpecificOutput.additionalContext | test("approved plan"))' "$out"
+
+new_project
+mkdir -p "$TMP/gplans"; printf '# Plans-dir plan\n\nUse Redis.\n' > "$TMP/gplans/feature.md"
+GEMINI_PLANS_DIR="$TMP/gplans" hook gemini pre-tool '{"session_id":"g3","tool_name":"exit_plan_mode","tool_input":{"plan_filename":"feature.md"}}' >/dev/null
+hook gemini post-tool "{\"session_id\":\"g3\",\"tool_name\":\"replace\",\"tool_input\":{\"file_path\":\"$P/cache.py\"}}" >/dev/null
+grep -q "Use Redis" "$P"/docs/decisions/_plans/*.md 2>/dev/null && ok "gemini: plan_filename resolved in GEMINI_PLANS_DIR" || fail "gemini: plan_filename resolved in GEMINI_PLANS_DIR" "no archive"
 
 echo "== engine: Cursor"
 new_project; audit_on
@@ -191,14 +196,20 @@ new_project; audit_on
 printf '%s\n' \
   "{\"type\":\"user.message\",\"data\":{\"content\":\"pick one\"}}" \
   "{\"type\":\"assistant.message\",\"data\":{\"content\":\"$DECISION_MSG\"}}" \
-  "{\"type\":\"tool.result\",\"data\":{\"content\":\"INJECTED\"}}" > "$TMP/cp.jsonl"
+  "{\"type\":\"tool.result\",\"data\":{\"content\":\"INJECTED\"}}" \
+  "{\"type\":\"assistant.message\",\"agentId\":\"sub1\",\"data\":{\"content\":\"INJECTED subagent\"}}" \
+  "{\"type\":\"assistant.message\",\"data\":{\"content\":\"\",\"toolRequests\":[]}}" > "$TMP/cp.jsonl"
 hook copilot prompt '{"sessionId":"cp1","prompt":"pick one"}' >/dev/null
 out="$(hook copilot stop "{\"sessionId\":\"cp1\",\"transcriptPath\":\"$TMP/cp.jsonl\",\"stopReason\":\"end_turn\"}")"
 expect "copilot: audit -> allow" '. == {}' "$out"
 grep -q "ASSISTANT: $DECISION_MSG" "$JUDGE_IN" && ! grep -q INJECTED "$JUDGE_IN" \
   && ok "copilot: reply from the last assistant.message" || fail "copilot: reply from the last assistant.message" "$(cat "$JUDGE_IN")"
+out="$(hook copilot pre-tool '{"sessionId":"cp1","toolName":"bash","toolArgs":"{\"command\":\"ls\"}"}')"
+expect "copilot: unrelated preToolUse -> allow" '. == {}' "$out"
 out="$(hook copilot stop "{\"sessionId\":\"cp2\",\"stopHookActive\":true,\"transcriptPath\":\"$TMP/cp.jsonl\"}" "$JUDGE_NEVER")"
 judge_not_called "copilot: camelCase stopHookActive -> no judge call"
+out="$(hook copilot stop "{\"sessionId\":\"cp3\",\"stop_hook_active\":true,\"transcriptPath\":\"$TMP/cp.jsonl\"}" "$JUDGE_NEVER")"
+judge_not_called "copilot: snake_case stop_hook_active (documented) -> no judge call"
 
 echo "== engine: judge timeout"
 for mode in timeout watchdog; do

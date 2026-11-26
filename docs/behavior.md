@@ -62,7 +62,7 @@ Each row is one logical engine event. The engine maps it to the agent's native n
 | `session-start` | `SessionStart` | `SessionStart` | `SessionStart` | `sessionStart` | `sessionStart` | Deletes session state older than 7 days. If any session left an unpromoted plan, adds context: "there are unlogged items from earlier sessions… offer the user /log-decision". |
 | `prompt` | `UserPromptSubmit` | `UserPromptSubmit` | `BeforeAgent` | `beforeSubmitPrompt` | `userPromptSubmitted` | Records when the turn started and stores the prompt text (the documented `prompt` field) for audit mode. Outputs nothing. |
 | `pre-tool` | `PreToolUse(ExitPlanMode)` | — | `BeforeTool(exit_plan_mode)` | — | `preToolUse` | If the tool is the plan tool, stores the plan as pending. Never blocks the tool. |
-| `post-tool` | `PostToolUse(ExitPlanMode\|Edit\|Write\|MultiEdit\|NotebookEdit)` | `PostToolUse(apply_patch\|Edit\|Write)` | `AfterTool(exit_plan_mode\|write_file\|replace)` | `postToolUse` (all tools) | `postToolUse` | Plan tool: promote (Claude Code) or store as pending (others). Edit tool: note ADR writes, promote a pending plan on the first project edit. Other tools: nothing. |
+| `post-tool` | `PostToolUse(ExitPlanMode\|Edit\|Write\|MultiEdit\|NotebookEdit)` | `PostToolUse(apply_patch\|Edit\|Write)` | `AfterTool(exit_plan_mode\|write_file\|replace)` | `postToolUse(Write)` | `postToolUse` | Plan tool: promote (Claude Code) or store as pending (others). Edit tool: note ADR writes, promote a pending plan on the first project edit. Other tools: nothing. |
 | `reply` | — | — | — | `afterAgentResponse` | — | Stores the final reply text for the following `stop` in audit mode (Cursor's `stop` doesn't include it). |
 | `stop` | `Stop` | `Stop` | `AfterAgent` | `stop` | `agentStop` | Audit mode only (section 6). Always returns "allow". |
 
@@ -75,7 +75,7 @@ A plan moves through three states: **none → pending → promoted**. Promotion 
 ### Pending
 
 - **Trigger:** the agent calls its plan tool (`ExitPlanMode` / `exit_plan_mode`). The `pre-tool` hook fires *before* the user sees the approval dialog, so a plan is stored as pending even if the user rejects it or presses Esc.
-- **What is stored:** the plan text (from the tool input), the plan file path if the agent has one (`planFilePath`, Gemini's `plan_path` / `plan_filename`, Copilot's session `plan.md`), and a timestamp. It goes into `.chronicle/state/<session>/pending-plan.json`.
+- **What is stored:** the plan text (from the tool input), the plan file path if the agent has one (`planFilePath`, Gemini's `plan_filename`, Copilot's session `plan.md`), and a timestamp. It goes into `.chronicle/state/<session>/pending-plan.json`.
 - **Revisions:** a later plan-tool call overwrites the pending plan. Only the latest one counts.
 - **Logged as** `plan-pending`.
 
@@ -137,8 +137,8 @@ Audit mode is off by default. Switch it on with `"judge": {"mode": "audit"}`. It
 At every `stop`:
 
 1. If `judge.mode` isn't `audit`, allow. Nothing else happens; this is the default.
-2. If the agent signals a continuation caused by some stop hook (`stop_hook_active` / `stopHookActive`), or on Cursor the turn didn't complete (`status` other than `completed`), allow.
-3. Get the reply from the documented hook field: `last_assistant_message` (Claude Code, Codex), `prompt_response` (Gemini), the stored `afterAgentResponse` text (Cursor). Copilot's `agentStop` has no reply field, so Chronicle reads the last top-level `assistant.message` entry from the transcript. Claude Code and Codex fall back to the transcript the same way if the field is empty, accepting only their own assistant entries (`type: "assistant"`, or Codex `agent_message` events). If there is no reply, allow.
+2. If the agent signals a continuation caused by some stop hook (`stop_hook_active`; Copilot sends it in snake_case too, Chronicle also accepts `stopHookActive`), or on Cursor the turn didn't complete (`status` other than `completed`), allow.
+3. Get the reply from the documented hook field: `last_assistant_message` (Claude Code, Codex), `prompt_response` (Gemini), the stored `afterAgentResponse` text (Cursor). Copilot's `agentStop` has no reply field, so Chronicle reads the last `assistant.message` entry with text from the transcript (`events.jsonl`), skipping ephemeral and subagent messages. Claude Code versions without `last_assistant_message` fall back to the transcript the same way, accepting only the main agent's `type: "assistant"` entries. Codex always sends the field; when it's null the turn produced no text and nothing is judged. If there is no reply, allow.
 4. Build the input: `USER:` the prompt stored at the last prompt event (up to 3,000 characters) and `ASSISTANT:` the reply (up to 5,000 characters). Nothing else from the conversation is used.
 5. Note whether an ADR was written during this turn (the last ADR write is newer than the turn start).
 6. Run the judge under the lock. Log `audit` with the decisions and `adr_this_turn`, or `audit-unavailable` if the judge couldn't run or answered with something unparseable.
@@ -263,7 +263,7 @@ With audit mode off, a normal turn logs nothing. `/chronicle-status` summarizes 
 | Plan events | pre and post `ExitPlanMode` | none | `BeforeTool` / `AfterTool(exit_plan_mode)` | none | `pre`/`postToolUse` (unverified) |
 | Plan promotion | approval or first edit | — | first write (`AfterTool` doesn't prove approval) | — | first edit |
 | Audit: prompt from | `UserPromptSubmit.prompt` | `UserPromptSubmit.prompt` | `BeforeAgent.prompt` | `beforeSubmitPrompt.prompt` | `userPromptSubmitted.prompt` |
-| Audit: reply from | `last_assistant_message` | `last_assistant_message`, otherwise the rollout's last `agent_message` | `prompt_response` | `afterAgentResponse.text`, stored for `stop` | transcript, last `assistant.message` |
+| Audit: reply from | `last_assistant_message` | `last_assistant_message` | `prompt_response` | `afterAgentResponse.text`, stored for `stop` | transcript, last `assistant.message` |
 | Hook commands | absolute (`${CLAUDE_PROJECT_DIR}`) | relative to repo root | relative | relative | relative |
 
 OpenCode has no hooks: it reads the rule from `AGENTS.md`, and there is no plan capture or audit mode.
@@ -274,7 +274,7 @@ OpenCode has no hooks: it reads the rule from `AGENTS.md`, and there is no plan 
 - Decisions the agent doesn't recognize or forgets to record despite the rule. `/chronicle-review` and the git guard are the safety nets; audit mode shows how often it happens.
 - Anything in Codex, Gemini CLI or OpenCode without the `AGENTS.md` setup, unless you run `/log-decision` or `/chronicle-review`.
 - Plans in Codex, Cursor and OpenCode as plans. The rule asks the agent to record a plan's decisions when it starts implementing, but the plan isn't archived.
-- Copilot in VS Code most likely runs Chronicle's Copilot hooks (VS Code agent hooks, preview), but this is untested.
+- Copilot in VS Code most likely runs Chronicle's Copilot hooks (it shares the Copilot CLI's hook runtime), but this is untested.
 
 ## 15. Privacy and data flow
 

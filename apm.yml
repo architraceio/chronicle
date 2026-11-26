@@ -1,6 +1,6 @@
 name: chronicle
 version: 0.2.0
-description: Captures architectural decisions as ADRs in your repo, automatically, across coding agents.
+description: Records the architectural decisions you make with coding agents as ADRs in your repo, while you work.
 author: architrace
 license: MIT
 dependencies:

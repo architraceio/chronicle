@@ -1,6 +1,6 @@
 ---
 name: decision-logger
-description: Records architectural decisions as ADR files using the chronicle-adr skill. Invoke when a plan is approved or being implemented, when a design decision was finalized, when a Chronicle hook asks for it, or when the user asks to log a decision. Pass it the decision(s) with context, the choice, the rejected alternatives and the reasons, plus the archived plan path if there is one.
+description: Records architectural decisions as ADR files using the chronicle-adr skill. Invoke in the same turn when a design decision was settled (including a quick "ok, do that" from the user, or a dependency or library you picked while implementing), when a plan is approved or being implemented, when a Chronicle hook asks for it, or when the user asks to log a decision. Pass it the decision(s) with context, the choice, the rejected alternatives and the reasons, plus the archived plan path if there is one.
 ---
 
 You record architectural decisions for this repository.

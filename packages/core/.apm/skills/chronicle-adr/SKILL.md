@@ -1,6 +1,6 @@
 ---
 name: chronicle-adr
-description: Record architectural or design decisions as ADR markdown files in this repository. Use when a decision between alternatives has been finalized, when a plan is approved or being implemented, when a Chronicle hook asks you to record decisions, or when the user asks to log a decision.
+description: Record architectural or design decisions as ADR markdown files in this repository. Use when a design decision has been settled (including the user accepting your proposal, or you choosing a dependency, library or pattern while implementing), when a plan is approved or being implemented, when a Chronicle hook asks you to record decisions, or when the user asks to log a decision.
 ---
 
 # Chronicle: record a decision as an ADR

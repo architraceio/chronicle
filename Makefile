@@ -1,7 +1,7 @@
 # Chronicle development tasks
 ENGINE_FILES := packages/engine/chronicle-hook packages/engine/judge-prompt.md
 HARNESSES    := claude codex gemini cursor copilot
-APM          ?= uvx --from apm-cli==0.38.1 apm
+APM          ?= uvx --from apm-cli==0.39.0 apm
 SHELLCHECK   ?= $(shell command -v shellcheck 2>/dev/null || echo uvx --from shellcheck-py shellcheck)
 
 .PHONY: all sync check-sync lint test test-apm

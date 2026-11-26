@@ -11,16 +11,16 @@ Three layers:
 
 - Stop: with audit off, nothing is judged or logged; with audit on, the judge gets exactly the recorded prompt and the reply, the verdict and `adr_this_turn` are logged, and the hook always returns "allow" (judge yes, no, failing, timing out with `timeout` and with the shell watchdog used on macOS).
 - Fork guard: `CHRONICLE_JUDGE=1`, the judge lock, the judge's own session re-entering the hook; also `stop_hook_active`, an empty reply and garbage input.
-- Reply text: only from documented fields or, as a fallback, from the agent's own assistant entries in the transcript (Claude Code request copies, Codex `response_item`s and Copilot tool results are ignored).
+- Reply text: only from documented fields, or for Copilot (and Claude Code versions without `last_assistant_message`) from the main agent's own assistant entries in the transcript (request copies, subagent, empty and tool entries are ignored).
 - Plans: pending on `PreToolUse(ExitPlanMode)`, promotion on approval and on the first project edit after a rejected dialog, edits outside the project don't promote, the latest plan revision is archived, no double promotion, `SessionStart` reminder for an unimplemented plan.
-- Per agent: Codex (`apply_patch` ADR detection, `agent_message` fallback), Gemini (`prompt_response`, `plan_path`, `AfterTool` promotion, never `deny`), Cursor (`afterAgentResponse` → `stop`, aborted turns), Copilot (camelCase payloads, transcript parsing).
+- Per agent: Codex (`apply_patch` ADR detection, null reply), Gemini (`prompt_response`, `plan_filename` relative to the project or `GEMINI_PLANS_DIR`, `AfterTool` promotion, never `deny`), Cursor (`afterAgentResponse` → `stop`, aborted turns), Copilot (camelCase payloads, transcript parsing).
 - `chronicle-adr`: numbering with gaps, duplicate refusal, supersede, index, v1 config migration, guard in warn and block mode.
 
 `make lint` runs shellcheck over all scripts. `make check-sync` fails if a hook package's bundled engine drifted from `packages/engine/`. Run `make sync` after editing the engine.
 
 ## 2. APM install test: `make test-apm`
 
-`tests/apm-install.sh` installs this repository with APM 0.38.1 into a temporary project with `.claude`, `.codex`, `.gemini`, `.cursor`, `.github` and `.opencode`. It checks every deployed file and hook entry against the support matrix, including that a pre-existing user hook survives, that Gemini doesn't get a `SessionEnd` mapping, and that Copilot gets the native hook format. It also runs the documented `AGENTS.md` setup: a hand-written `AGENTS.md` is left alone by default, and with `compilation.agents_md.mode: managed_section` the rule lands between the markers while your own text stays. It then runs `apm uninstall` and checks that only Chronicle's entries are gone. To test another APM version: `make test-apm APM=apm`.
+`tests/apm-install.sh` installs this repository with APM 0.39.0 into a temporary project with `.claude`, `.codex`, `.gemini`, `.cursor`, `.github` and `.opencode`. It checks every deployed file and hook entry against the support matrix, including that each agent gets the current rule text, that a pre-existing user hook survives, that Gemini doesn't get a `SessionEnd` mapping, and that Copilot gets the native hook format. It also runs the documented `AGENTS.md` setup: a hand-written `AGENTS.md` is left alone by default, with `compilation.agents_md.mode: managed_section` the rule lands between the markers while your own text stays, and a generated `GEMINI.md` imports `AGENTS.md`. It then runs `apm uninstall` and checks that only Chronicle's entries are gone. To test another APM version: `make test-apm APM=apm`.
 
 ## 3. Live tests (manual, per agent)
 
@@ -54,7 +54,13 @@ Status (0.2.0):
 
 Verified: a GitHub install (`apm install "architraceio/chronicle#apm-package"`) resolves all sub-packages and deploys the same paths as a local install.
 
-Checked against official docs, not yet in a live run: Codex hooks are on by default; trust is given in `/hooks`, tied to a hash, and asked again after a change; Stop has `last_assistant_message`, `stop_hook_active`, `transcript_path` and `turn_id`, and `decision: block` continues. Gemini's `AfterAgent` has `prompt_response`; `deny` discards the reply; `AfterTool` and `BeforeAgent` accept `additionalContext`; the plan field is `plan_path`; project hooks are fingerprinted. Cursor runs project hooks from the project root; `agent -p` supports `--mode ask` and `--output-format json`. Copilot: `postToolUse` and `sessionStart` accept `additionalContext`; prompt-hook output is dropped; `agentStop` honors `decision: block`. VS Code reads `.github/hooks/*.json`.
+Checked against official docs and source (2026-11-26), not yet in a live run:
+
+- **Codex** (openai/codex source): `UserPromptSubmit` has a top-level `prompt` with only the user's text; `Stop` has `last_assistant_message` (null when the turn produced no text), `stop_hook_active`, `transcript_path` and `turn_id`; the hook `timeout` is in seconds; hooks run in the session's working directory; `codex exec` supports `-s read-only`, `--ephemeral`, `--skip-git-repo-check`, `-m`, `-` for stdin, and `-c features.hooks=false`.
+- **Gemini CLI**: `BeforeAgent` has `prompt`; `AfterAgent` has `prompt_response` and `stop_hook_active`, and `deny` discards the reply; `exit_plan_mode` sends `plan_filename` (absolute, project-relative or relative to `GEMINI_PLANS_DIR`); `AfterTool` and `SessionStart` accept `additionalContext`; hook timeouts are in milliseconds (APM converts them); `gemini -p … --output-format json` puts the text in `.response`.
+- **Cursor**: `beforeSubmitPrompt` has `prompt` and can't add context; `afterAgentResponse` has `text`; `stop` has `status` and `loop_count`; `postToolUse` and `sessionStart` accept `additional_context`; file edits are the `Write` tool; project hooks run from the project root; `timeout` is in seconds; `agent -p --mode ask --output-format json --model` puts the text in `.result`; auth via `agent login` or `CURSOR_API_KEY`.
+- **Copilot CLI**: `userPromptSubmitted` has `prompt` and its output is dropped; `agentStop` has `transcriptPath` and `stop_hook_active` (snake_case) but no reply text; the session transcript is `events.jsonl` with `assistant.message` entries (`data.content`); `postToolUse` and `sessionStart` accept `additionalContext`; `exit_plan_mode` exists in plan mode and the plan is in the session's `plan.md`; `timeoutSec` is the timeout field; `-p`, `-s`, `--no-custom-instructions`, `--no-ask-user` and `--model` exist.
+- **VS Code**: the Copilot agent shares the Copilot CLI's hook runtime and format and reads `.github/hooks/*.json` (trusted folders); it also reads `.claude/settings.json`.
 
 Live-test checklist: each item is an assumption the code relies on that only a real session can confirm.
 
@@ -62,9 +68,9 @@ Live-test checklist: each item is an assumption the code relies on that only a r
 |---|---|
 | All | How reliably the agent follows the rule (L1, L1b, L1c, and over a longer session with audit mode). This is the main open question. |
 | Claude Code | `PreToolUse(ExitPlanMode)` fires when the plan dialog is rejected (L3, L4). The plan text is in `tool_response.plan` and the path in `planFilePath` (L5). |
-| Codex | The rule is read from `AGENTS.md`. For audit: `codex exec` accepts `-s read-only` and `-c features.hooks=false` (watch for `audit-unavailable`), `UserPromptSubmit` carries `prompt`, the hook timeout is in seconds, and hooks find the engine when Codex is started from a subdirectory. |
-| Gemini CLI | The rule is read through `GEMINI.md` → `AGENTS.md`. `exit_plan_mode` sends `plan_path` and the plan file is found (`GEMINI_PLANS_DIR`). For audit: the judge's `--output-format json` envelope has `.response`. |
-| Cursor | The rule in `.cursor/rules/` is applied. For audit: `afterAgentResponse` fires before `stop` and carries `.text`, `beforeSubmitPrompt` carries `prompt`, the judge's JSON envelope has `.result`. |
-| Copilot CLI | Payload field names (`sessionId`, `transcriptPath`, `toolName`, `toolArgs`, `prompt`). The transcript's `assistant.message` entries. Whether `preToolUse`/`postToolUse` fire for `exit_plan_mode`. The judge flags `-s --no-custom-instructions --no-ask-user`. |
-| Copilot in VS Code | Whether Chronicle's `.github/hooks` file runs there and with which payload. That no hooks run twice when `chat.useClaudeHooks` is off. |
+| Codex | The rule is read from `AGENTS.md` and followed. For audit: the judge call succeeds (no `audit-unavailable`) and its output parses. |
+| Gemini CLI | The rule is read through `GEMINI.md` → `AGENTS.md`. The plan file named by `plan_filename` is found (L3, L5). Hooks run from the project root. |
+| Cursor | The rule in `.cursor/rules/` is applied. `postToolUse(Write)` carries the file path in `tool_input` (`file_path` or `path`), so ADR writes are noticed. For audit: `afterAgentResponse` fires before `stop` (the docs don't say). |
+| Copilot CLI | Whether `preToolUse`/`postToolUse` fire for `exit_plan_mode` and the plan is in `toolArgs` or `plan.md`. The hooks' working directory (the docs say commands resolve from the repository root). The transcript at `transcriptPath` is `events.jsonl` with `assistant.message` entries. |
+| Copilot in VS Code | Whether Chronicle's `.github/hooks` file runs there with the CLI payloads, and whether the Claude hooks from `.claude/settings.json` run too. |
 | macOS | The full unit suite under the system bash 3.2 and BSD tools (`grep -E`, `stat -f`, `date`, `pkill`). |

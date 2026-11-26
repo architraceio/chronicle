@@ -30,7 +30,8 @@
             "command": "./scripts/chronicle-hook --harness cursor post-tool",
             "timeout": 10
           }
-        ]
+        ],
+        "matcher": "Write"
       }
     ],
     "afterAgentResponse": [
