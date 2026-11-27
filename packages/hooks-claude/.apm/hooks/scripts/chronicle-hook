@@ -1,0 +1,416 @@
+#!/usr/bin/env bash
+# chronicle-hook — Chronicle's hook engine, shared by every harness.
+#
+#   chronicle-hook --harness <claude|codex|gemini|cursor|copilot> <event>
+#
+# events: session-start | prompt | pre-tool | post-tool | stop | reply
+#
+# Contract: reads the harness's hook JSON on stdin, prints exactly one JSON
+# object on stdout and exits 0. Any internal error degrades to "allow" ({}),
+# so Chronicle can never break or wedge the host agent.
+set -uo pipefail
+
+ENGINE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HARNESS=""
+EVENT=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --harness) HARNESS="${2:-}"; shift 2 ;;
+    *) EVENT="$1"; shift ;;
+  esac
+done
+
+allow() { printf '{}\n'; }
+
+# Fork guard: the audit judge's own CLI session must never run Chronicle logic.
+if [ "${CHRONICLE_JUDGE:-}" = "1" ]; then allow; exit 0; fi
+command -v jq >/dev/null 2>&1 || { allow; exit 0; }
+
+INPUT="$(cat)"
+[ -n "$INPUT" ] || INPUT='{}'
+jq -e . >/dev/null 2>&1 <<< "$INPUT" || INPUT='{}'
+
+field() { jq -r "$1 // empty" <<< "$INPUT" 2>/dev/null; }
+
+# ---------------------------------------------------------------- locations
+resolve_project_dir() {
+  local d="${CHRONICLE_PROJECT_DIR:-${CLAUDE_PROJECT_DIR:-${GEMINI_PROJECT_DIR:-}}}"
+  [ -z "$d" ] && d="$(field '.cwd')"
+  [ -z "$d" ] && d="$(field '.workspace_roots[0]')"
+  [ -z "$d" ] && d="$(pwd)"
+  git -C "$d" rev-parse --show-toplevel 2>/dev/null || echo "$d"
+}
+PROJECT_DIR="$(resolve_project_dir)"
+CHRONICLE_DIR="$PROJECT_DIR/.chronicle"
+STATE_ROOT="$CHRONICLE_DIR/state"
+LOG_FILE="$CHRONICLE_DIR/log.jsonl"
+
+SESSION="$(field '.session_id // .sessionId // .conversation_id')"
+SESSION="$(printf '%s' "${SESSION:-default}" | tr -c 'A-Za-z0-9_.-' '_' | cut -c1-80)"
+SDIR="$STATE_ROOT/$SESSION"
+
+ensure_state() {
+  mkdir -p "$SDIR" 2>/dev/null || return 1
+  [ -f "$CHRONICLE_DIR/.gitignore" ] || printf '*\n' > "$CHRONICLE_DIR/.gitignore"
+}
+
+find_adr_tool() {
+  local c
+  for c in \
+    "$PROJECT_DIR/.claude/skills/chronicle-adr/scripts/chronicle-adr" \
+    "$PROJECT_DIR/.agents/skills/chronicle-adr/scripts/chronicle-adr" \
+    "$PROJECT_DIR/.gemini/skills/chronicle-adr/scripts/chronicle-adr" \
+    "$PROJECT_DIR/.github/skills/chronicle-adr/scripts/chronicle-adr" \
+    "$ENGINE_DIR/../core/.apm/skills/chronicle-adr/scripts/chronicle-adr"; do
+    [ -f "$c" ] && { echo "$c"; return 0; }
+  done
+  return 1
+}
+ADR_TOOL="$(find_adr_tool || true)"
+
+CONFIG='{}'
+load_config() {
+  if [ -n "$ADR_TOOL" ]; then
+    CONFIG="$(CHRONICLE_PROJECT_DIR="$PROJECT_DIR" bash "$ADR_TOOL" config 2>/dev/null)" || CONFIG='{}'
+  elif [ -f "$PROJECT_DIR/.chronicle.json" ]; then
+    CONFIG="$(jq -c . "$PROJECT_DIR/.chronicle.json" 2>/dev/null)" || CONFIG='{}'
+  fi
+  [ -n "$CONFIG" ] || CONFIG='{}'
+}
+cfg() { jq -r "$1" <<< "$CONFIG" 2>/dev/null; }
+
+decisions_dir_rel() { local d; d="$(cfg '.decisionsDir // "docs/decisions"')"; echo "${d%/}"; }
+
+log_event() { # log_event <json-object-string>
+  mkdir -p "$CHRONICLE_DIR" 2>/dev/null || return 0
+  jq -c --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg h "$HARNESS" --arg e "$EVENT" --arg s "$SESSION" \
+    '{ts:$ts, harness:$h, event:$e, session:$s} + .' <<< "$1" >> "$LOG_FILE" 2>/dev/null || true
+}
+
+# ---------------------------------------------------------------- outputs
+native_event() {
+  case "$HARNESS:$1" in
+    gemini:post-tool) echo AfterTool ;;
+    *:post-tool) echo PostToolUse ;;
+    *:session-start) echo SessionStart ;;
+  esac
+}
+
+emit_context() { # emit_context <logical-event> <text>
+  local text="$2"
+  case "$HARNESS" in
+    claude|codex|gemini)
+      jq -n --arg e "$(native_event "$1")" --arg t "$text" \
+        '{hookSpecificOutput:{hookEventName:$e, additionalContext:$t}}' ;;
+    cursor)  jq -n --arg t "$text" '{additional_context:$t}' ;;
+    copilot) jq -n --arg t "$text" '{additionalContext:$t}' ;;
+    *) allow ;;
+  esac
+}
+
+# ---------------------------------------------------------------- state
+turn_start() { cat "$SDIR/turn-start" 2>/dev/null || echo 0; }
+
+# ---------------------------------------------------------------- reply text
+# The reply comes from documented hook fields. Only Copilot (whose agentStop
+# has no reply field) and older Claude Code versions (without
+# last_assistant_message) read the last assistant message from the transcript,
+# accepting only the main agent's own assistant entries, never injected or
+# copied request content. Codex always sends last_assistant_message; null means
+# the turn produced no text, so there is nothing to fall back to.
+last_assistant_from_transcript() { # <path>
+  local p="$1" filter
+  [ -n "$p" ] && [ -f "$p" ] || return 0
+  case "$HARNESS" in
+    claude)  filter='select(.type=="assistant" and (.isSidechain|not)) | .message.content
+                     | if type=="string" then . else ([.[]? | select(.type=="text") | .text] | join("\n")) end' ;;
+    copilot) filter='select(.type=="assistant.message" and (.ephemeral|not) and (.agentId == null)
+                       and (.data.parentToolCallId == null)) | .data.content' ;;
+    *) return 0 ;;
+  esac
+  jq -R -r "(try fromjson catch null) | select(type==\"object\") | ($filter) | select(type==\"string\" and length>0) | gsub(\"\\n\"; \" \")" \
+    < "$p" 2>/dev/null | tail -n 1
+}
+
+reply_text() {
+  local t=""
+  case "$HARNESS" in
+    claude) t="$(field '.last_assistant_message')"
+            if [ -z "$t" ] && [ "$(jq -r 'has("last_assistant_message")' <<< "$INPUT")" != "true" ]; then
+              t="$(last_assistant_from_transcript "$(field '.transcript_path')")"
+            fi ;;
+    codex) t="$(field '.last_assistant_message')" ;;
+    gemini) t="$(field '.prompt_response')" ;;
+    cursor) t="$(cat "$SDIR/last-reply" 2>/dev/null)" ;;
+    copilot) t="$(last_assistant_from_transcript "$(field '.transcriptPath // .transcript_path')")" ;;
+  esac
+  printf '%s' "$t"
+}
+
+# ---------------------------------------------------------------- judge (audit mode only)
+judge_lock() {
+  local l="$STATE_ROOT/judge.lock"
+  mkdir -p "$STATE_ROOT" 2>/dev/null
+  if [ -d "$l" ] && [ $(( $(date +%s) - $(stat -c %Y "$l" 2>/dev/null || stat -f %m "$l" 2>/dev/null || echo 0) )) -gt 60 ]; then
+    rmdir "$l" 2>/dev/null
+  fi
+  mkdir "$l" 2>/dev/null
+}
+judge_unlock() { rmdir "$STATE_ROOT/judge.lock" 2>/dev/null || true; }
+
+# with_timeout <seconds> <cmd...>: coreutils `timeout` where available, else a
+# shell watchdog (macOS has no `timeout` by default). stdin is passed through.
+with_timeout() {
+  local t="$1"; shift
+  if [ -z "${CHRONICLE_FORCE_WATCHDOG:-}" ] && command -v timeout >/dev/null 2>&1; then
+    timeout "$t" "$@"; return
+  fi
+  "$@" <&0 &
+  local pid=$! wd rc
+  # Stop the command first (so it can't act on a dead child), then its children.
+  # shellcheck disable=SC2086  # $kids is a whitespace-separated PID list
+  ( sleep "$t"
+    kids="$(pgrep -P "$pid" 2>/dev/null)"
+    kill -TERM "$pid" 2>/dev/null
+    [ -n "$kids" ] && kill -TERM $kids 2>/dev/null
+    sleep 2
+    kill -KILL "$pid" $kids 2>/dev/null ) >/dev/null 2>&1 &
+  wd=$!
+  wait "$pid"; rc=$?
+  kill "$wd" 2>/dev/null; wait "$wd" 2>/dev/null
+  return $rc
+}
+
+# run_judge <prompt> -> raw model text on stdout; non-zero on failure
+run_judge() {
+  local prompt="$1" model tmo work out rc
+  model="$(cfg '.judge.model // empty')"
+  tmo="$(cfg '.judge.timeoutSec // 20')"
+  work="$(mktemp -d 2>/dev/null)" || return 1
+  local -a cmd
+  if [ -n "${CHRONICLE_JUDGE_CMD:-}" ]; then
+    cmd=(bash -c "$CHRONICLE_JUDGE_CMD")
+  else
+    case "$HARNESS" in
+      claude)  cmd=(claude -p --model "${model:-haiku}" --output-format json --tools "" \
+                    --no-session-persistence --settings '{"disableAllHooks":true}') ;;
+      codex)   cmd=(codex exec -s read-only --ephemeral --skip-git-repo-check -c features.hooks=false)
+               [ -n "$model" ] && cmd+=(-m "$model"); cmd+=(-) ;;
+      gemini)  cmd=(gemini --output-format json); [ -n "$model" ] && cmd+=(-m "$model"); cmd+=(-p "$prompt") ;;
+      cursor)  cmd=(agent -p --mode ask --output-format json); [ -n "$model" ] && cmd+=(--model "$model"); cmd+=("$prompt") ;;
+      copilot) cmd=(copilot -s --no-custom-instructions --no-ask-user); [ -n "$model" ] && cmd+=(--model "$model"); cmd+=(-p "$prompt") ;;
+      *) rmdir "$work"; return 1 ;;
+    esac
+    command -v "${cmd[0]}" >/dev/null 2>&1 || { rmdir "$work"; return 1; }
+  fi
+  out="$(cd "$work" && export CHRONICLE_JUDGE=1 && printf '%s' "$prompt" | with_timeout "$tmo" "${cmd[@]}" 2>/dev/null)"; rc=$?
+  rm -rf "$work"
+  [ $rc -eq 0 ] && [ -n "$out" ] || return 1
+  # Unwrap CLI JSON envelopes (.result for claude/cursor, .response for gemini).
+  local inner
+  inner="$(jq -r 'if type=="object" then (.result // .response // empty) else empty end' <<< "$out" 2>/dev/null)"
+  [ -n "$inner" ] && out="$inner"
+  printf '%s' "$out"
+}
+
+# parse_verdict <raw> -> {"decisions":[{title,final}]} ; non-zero if unparseable
+parse_verdict() {
+  local raw="$1" j
+  j="$(jq -c 'select(type=="object" and has("decisions"))' <<< "$raw" 2>/dev/null)"
+  if [ -z "$j" ]; then
+    j="$(printf '%s' "$raw" | tr '\n' ' ' | sed -E 's/^[^{]*//; s/[^}]*$//' | jq -c 'select(type=="object" and has("decisions"))' 2>/dev/null)"
+  fi
+  [ -n "$j" ] || return 1
+  jq -c '{decisions: [ .decisions[]? | select(type=="object" and ((.title? // "") | length) > 0)
+                       | {title: (.title|tostring|.[0:120]), final: (.final == true)} ]}' <<< "$j"
+}
+
+judge_prompt() { # judge_prompt <window>
+  local tmpl adrs
+  tmpl="$(cat "$ENGINE_DIR/judge-prompt.md" 2>/dev/null)"
+  [ -n "$ADR_TOOL" ] && adrs="$(CHRONICLE_PROJECT_DIR="$PROJECT_DIR" bash "$ADR_TOOL" list 2>/dev/null | cut -f1,3 | tail -n 60)"
+  printf '%s\n\nEXISTING ADRS (number, title):\n%s\n\nCONVERSATION EXCERPT:\n<<<\n%s\n>>>\n' \
+    "$tmpl" "${adrs:-(none)}" "$1"
+}
+
+# ---------------------------------------------------------------- plans
+plan_from_input() { # sets PLAN_TEXT and PLAN_PATH (call directly, not in $(...))
+  PLAN_TEXT=""
+  PLAN_PATH="$(field '.tool_input.planFilePath // .tool_response.filePath // .tool_input.plan_filename')"
+  if [ -z "$PLAN_PATH" ]; then
+    PLAN_PATH="$(jq -r '(.toolArgs // empty) | (if type=="string" then (try fromjson catch {}) else . end) | .planFilePath // .plan_path // empty' <<< "$INPUT" 2>/dev/null)"
+  fi
+  # Relative paths: project root first, then Gemini's plans directory (the
+  # order Gemini itself resolves plan_filename in).
+  if [ -n "$PLAN_PATH" ] && [ "${PLAN_PATH#/}" = "$PLAN_PATH" ]; then
+    if [ -f "$PROJECT_DIR/$PLAN_PATH" ] || [ -z "${GEMINI_PLANS_DIR:-}" ]; then PLAN_PATH="$PROJECT_DIR/$PLAN_PATH"
+    else PLAN_PATH="$GEMINI_PLANS_DIR/$PLAN_PATH"; fi
+  fi
+  if [ "$HARNESS" = "copilot" ] && [ -z "$PLAN_PATH" ] && [ -f "$HOME/.copilot/session-state/$SESSION/plan.md" ]; then
+    PLAN_PATH="$HOME/.copilot/session-state/$SESSION/plan.md"
+  fi
+  PLAN_TEXT="$(field '.tool_response.plan // .tool_input.plan')"
+  if [ -z "$PLAN_TEXT" ] && [ -n "$PLAN_PATH" ] && [ -f "$PLAN_PATH" ]; then PLAN_TEXT="$(cat "$PLAN_PATH")"; fi
+  return 0
+}
+
+save_pending() { # save_pending <text> <path>
+  [ -n "$1" ] || [ -n "$2" ] || return 0
+  ensure_state || return 0
+  jq -n --arg p "$1" --arg f "$2" --arg ts "$(date +%s)" '{plan:$p, path:$f, ts:$ts}' > "$SDIR/pending-plan.json"
+  log_event '{"action":"plan-pending"}'
+}
+
+promote_plan() { # promote_plan <text> <path>  (prints hook output)
+  local text="$1" path="$2"
+  [ -n "$path" ] && [ -f "$path" ] && text="$(cat "$path")"   # latest revision wins
+  rm -f "$SDIR/pending-plan.json"
+  if [ "$(cfg '.capture.planAccept')" = "false" ] || [ -z "$text" ]; then allow; return; fi
+  local ddir archive="" rel=""
+  ddir="$(decisions_dir_rel)"
+  if [ "$(cfg '.archivePlans')" != "false" ]; then
+    local slug ts
+    slug="$(printf '%s' "$text" | grep -m1 -v '^[[:space:]]*$' | sed -E 's/^#+[[:space:]]*//' \
+            | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' | cut -c1-50)"
+    ts="$(date -u +%Y%m%dT%H%M%SZ)"
+    mkdir -p "$PROJECT_DIR/$ddir/_plans"
+    rel="$ddir/_plans/$ts-${slug:-plan}.md"
+    archive="$PROJECT_DIR/$rel"
+    printf '%s\n' "$text" > "$archive"
+  fi
+  log_event "$(jq -nc --arg a "$rel" '{action:"plan-promoted", archive:$a}')"
+  local msg
+  msg="Chronicle: you are implementing an approved plan${rel:+ (archived at $rel)}. Before continuing, record its decisions: invoke the decision-logger subagent (or follow the chronicle-adr skill) and write ONE ADR PER DISTINCT architectural or design decision in the plan, Status: Accepted${rel:+, passing --plan $rel to chronicle-adr new}. Skip pure task steps that involve no choice between alternatives. Then continue with the implementation."
+  emit_context post-tool "$msg"
+}
+
+# ---------------------------------------------------------------- tools
+tool_name() { field '.tool_name // .toolName'; }
+is_plan_tool() { case "$1" in ExitPlanMode|exit_plan_mode) return 0 ;; esac; return 1; }
+is_edit_tool() {
+  printf '%s' "$1" | grep -Eqi '^(Edit|Write|MultiEdit|NotebookEdit|write_file|replace|apply_patch|edit|create|str_replace|str_replace_editor|insert)$'
+}
+edited_paths() {
+  local p
+  p="$(jq -r '
+    [ .tool_input.file_path?, .tool_input.notebook_path?, .tool_input.path?, .tool_input.absolute_path?,
+      ((.toolArgs // empty) | (if type=="string" then (try fromjson catch {}) else . end) | (.path? // .file_path? // empty)) ]
+    | map(select(. != null and . != "")) | .[]' <<< "$INPUT" 2>/dev/null)"
+  if [ -z "$p" ]; then # apply_patch style: paths inside the patch text
+    p="$(jq -r '.. | strings' <<< "$INPUT" 2>/dev/null | grep -oE '\*\*\* (Add|Update) File: .+' | sed -E 's/^\*\*\* (Add|Update) File: //')"
+  fi
+  printf '%s\n' "$p" | while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    case "$f" in /*) echo "$f" ;; *) echo "$PROJECT_DIR/$f" ;; esac
+  done
+}
+
+# ================================================================= events
+on_session_start() {
+  ensure_state || { allow; return; }
+  find "$STATE_ROOT" -mindepth 1 -maxdepth 1 -type d -mtime +7 -exec rm -rf {} + 2>/dev/null
+  local notes="" d f
+  for d in "$STATE_ROOT"/*/; do
+    f="${d}pending-plan.json"; [ -f "$f" ] || continue
+    notes="${notes}- an unimplemented plan from $(date -d "@$(jq -r .ts "$f")" +%F 2>/dev/null || echo "an earlier session")"$'\n'
+  done
+  if [ -z "$notes" ]; then allow; return; fi
+  emit_context session-start "Chronicle: there are unlogged items from earlier sessions:
+$notes
+If they were real decisions, offer the user to record them with /log-decision; otherwise ignore this note."
+}
+
+on_prompt() { # remember the turn start and the user's prompt (for audit mode)
+  ensure_state || { allow; return; }
+  date +%s > "$SDIR/turn-start"
+  field '.prompt' > "$SDIR/last-prompt"
+  allow
+}
+
+on_pre_tool() {
+  local name; name="$(tool_name)"
+  if is_plan_tool "$name"; then
+    plan_from_input
+    save_pending "$PLAN_TEXT" "$PLAN_PATH"
+  fi
+  allow
+}
+
+on_post_tool() {
+  ensure_state || { allow; return; }
+  local name; name="$(tool_name)"
+  if is_plan_tool "$name"; then
+    plan_from_input
+    # Only Claude Code's PostToolUse proves approval (it does not fire on rejection).
+    if [ "$HARNESS" = "claude" ]; then promote_plan "$PLAN_TEXT" "$PLAN_PATH"; return; fi
+    save_pending "$PLAN_TEXT" "$PLAN_PATH"; allow; return
+  fi
+  if is_edit_tool "$name"; then
+    local ddir project_edit=0 f
+    ddir="$PROJECT_DIR/$(decisions_dir_rel)"
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      case "$f" in
+        "$ddir"/[0-9]*-*.md) date +%s > "$STATE_ROOT/last-adr" ;;   # an ADR was written
+        "$ddir"/*|"$CHRONICLE_DIR"/*) ;;
+        "$PROJECT_DIR"/*) project_edit=1 ;;
+      esac
+    done < <(edited_paths)
+
+    if [ $project_edit -eq 1 ] && [ -f "$SDIR/pending-plan.json" ]; then
+      promote_plan "$(jq -r .plan "$SDIR/pending-plan.json")" "$(jq -r .path "$SDIR/pending-plan.json")"
+      return
+    fi
+  fi
+  allow
+}
+
+on_reply() { # Cursor afterAgentResponse: remember the final text for the stop hook
+  ensure_state || { allow; return; }
+  field '.text' > "$SDIR/last-reply"
+  allow
+}
+
+# Audit mode (judge.mode = "audit"): ask the judge whether the last exchange
+# settled a decision and log the verdict next to whether an ADR was written.
+# It never blocks, continues or messages the agent, so it cannot loop.
+on_stop() {
+  allow
+  [ "$(cfg '.judge.mode // "off"')" = "audit" ] || return 0
+  # Continuations caused by some other stop hook are not a new exchange.
+  [ "$(field '.stop_hook_active // .stopHookActive')" = "true" ] && return 0
+  if [ "$HARNESS" = "cursor" ]; then
+    [ "$(field '.status')" != "" ] && [ "$(field '.status')" != "completed" ] && return 0
+  fi
+  ensure_state || return 0
+  local reply prompt window raw verdict="" written=false
+  reply="$(reply_text)"
+  [ -n "$reply" ] || return 0
+  prompt="$(cat "$SDIR/last-prompt" 2>/dev/null)"
+  window="USER: ${prompt:0:3000}"$'\n'"ASSISTANT: ${reply:0:5000}"
+  [ "$(cat "$STATE_ROOT/last-adr" 2>/dev/null || echo 0)" -ge "$(turn_start)" ] && written=true
+  if judge_lock; then
+    raw="$(run_judge "$(judge_prompt "$window")")" && verdict="$(parse_verdict "$raw")"
+    judge_unlock
+  fi
+  if [ -z "$verdict" ]; then log_event '{"action":"audit-unavailable"}'; return 0; fi
+  log_event "$(jq -c --argjson w "$written" '{action:"audit", decisions:.decisions, adr_this_turn:$w}' <<< "$verdict")"
+}
+
+main() {
+  load_config
+  case "$EVENT" in
+    session-start) on_session_start ;;
+    prompt) on_prompt ;;
+    pre-tool) on_pre_tool ;;
+    post-tool) on_post_tool ;;
+    stop) on_stop ;;
+    reply) on_reply ;;
+    *) allow ;;
+  esac
+}
+
+OUT="$(main 2>/dev/null)" || OUT=""
+if [ -z "$OUT" ] || ! jq -e . >/dev/null 2>&1 <<< "$OUT"; then OUT='{}'; fi
+printf '%s\n' "$OUT"
+exit 0

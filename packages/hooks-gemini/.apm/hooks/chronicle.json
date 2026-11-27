@@ -1,0 +1,61 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "./scripts/chronicle-hook --harness gemini session-start",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "BeforeAgent": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "./scripts/chronicle-hook --harness gemini prompt",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "BeforeTool": [
+      {
+        "matcher": "exit_plan_mode",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "./scripts/chronicle-hook --harness gemini pre-tool",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "AfterTool": [
+      {
+        "matcher": "exit_plan_mode|write_file|replace",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "./scripts/chronicle-hook --harness gemini post-tool",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "AfterAgent": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "./scripts/chronicle-hook --harness gemini stop",
+            "timeout": 60
+          }
+        ]
+      }
+    ]
+  }
+}

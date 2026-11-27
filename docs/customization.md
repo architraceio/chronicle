@@ -1,75 +1,38 @@
 # Customization
 
-Chronicle is designed to be minimal but flexible. You can customize many aspects of how it works.
+Everything is configured in `.chronicle.json` at the project root. All keys are optional; `chronicle-adr config` prints the effective configuration. Version 1 files (with `stopHook`) are migrated automatically when read; only `stopHook.judgeModel` is carried over, as `judge.model`.
 
-## ADR Templates
-
-Chronicle ships with three ADR templates:
-
-### Nygard Classic (default)
-
-The classic ADR template by Michael Nygard, with title, date, status, context, decision, and consequences.
-
-### Extended 
-
-Extended template that adds YAML frontmatter and two extra sections — Alternatives Considered and Rationale.
-
-### Lightweight
-
-Four-section template: Title, Decision, Why, Trade-offs.
-
-You can select a template during installation, or modify it in `.chronicle.json`:
+The most effective setting isn't in this file: it's the rule the agent follows. If you want it stricter or looser for your project ("record every new dependency", "don't record test tooling"), add a line to your own `AGENTS.md`, `CLAUDE.md` or rules next to Chronicle's.
 
 ```json
 {
-  "template": "adr-extended"
+  "version": 2,
+  "decisionsDir": "docs/decisions",
+  "template": "adr-nygard",
+  "archivePlans": true,
+  "capture": { "planAccept": true },
+  "judge": { "mode": "off", "model": null, "timeoutSec": 20 },
+  "guard": { "mode": "warn", "paths": ["package.json", "go.mod", "Dockerfile*", "*.tf", "..."] }
 }
 ```
 
-## Custom Templates
+| Key | Values | Meaning |
+|---|---|---|
+| `decisionsDir` | path | Where ADRs, `_plans/` and the index go. |
+| `template` | `adr-nygard`, `adr-extended`, `adr-lightweight`, or a path such as `./docs/my-adr-template.md` | Template for new ADRs. Custom templates may use `{number}`, `{title}`, `{ISO date}`, `{uuid}` and the status placeholder `{Proposed \| Accepted \| Deprecated \| Superseded by ADR-XXXX}`. |
+| `archivePlans` | bool | Keep approved plans verbatim in `_plans/`. |
+| `capture.planAccept` | bool | Turn plans into ADRs. |
+| `judge.mode` | `off`, `audit` | `audit`: after every turn a small model checks your last message and the agent's reply and logs decisions it sees and whether an ADR was written. It never interrupts the agent. See [audit mode](getting-started.md#audit-mode-optional). |
+| `judge.model` | model id or `null` | `null` = `haiku` for Claude Code, the CLI default elsewhere. Set a small model for Codex, Gemini, Cursor and Copilot. |
+| `judge.timeoutSec` | int | How long an audit judge call may take before it is stopped and logged as `audit-unavailable`. |
+| `guard.mode` | `warn`, `block` | Behavior of `chronicle-adr guard`. |
+| `guard.paths` | globs | Files that usually carry a decision. |
 
-You can also use a custom template file by pointing to its path:
+## Changing the ADR prose style
 
-```json
-{
-  "template": "./my-custom-template.md"
-}
-```
+Edit the quality bar in the `chronicle-adr` skill (`.claude/skills/chronicle-adr/SKILL.md` or `.agents/skills/chronicle-adr/SKILL.md`). APM treats locally edited files as yours and won't overwrite them on update unless you pass `--force`. Prefer contributing changes upstream.
 
-## Keyword Customization
+## Turning parts off
 
-The automatic decision detection uses a keyword prefilter to reduce costs.
-
-You can customize the keywords in `.chronicle.json`:
-
-```json
-{
-  "stopHook": {
-    "prefilterKeywords": ["feature request", "implementation approach", "technology choice"]
-  }
-}
-```
-
-## Customizing the Decision Logger Subagent
-
-You can modify the `decision-logger` subagent prompt found in `.claude/agents/decision-logger.md` or `.opencode/agent/decision-logger.md` to change the quality standards or formatting.
-
-## Decision Directory
-
-You can customize where ADRs are stored in `.chronicle.json`:
-
-```json
-{
-  "decisionsDir": "docs/architecture/decisions"
-}
-```
-
-## Archive Plans
-
-You can disable the archiving of raw plans by setting:
-
-```json
-{
-  "archivePlans": false
-}
-```
+- No plan capture: `"capture": {"planAccept": false}`. The rule and manual capture keep working.
+- One agent only: `apm install architraceio/chronicle --target claude`.

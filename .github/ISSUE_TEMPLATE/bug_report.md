@@ -1,31 +1,30 @@
 ---
 name: Bug report
-about: Create a report to help us improve
+about: Chronicle captured the wrong thing, missed a decision, looped, or failed to install
 title: ''
 labels: bug
 assignees: ''
-
 ---
 
-**Describe the bug**
-A clear and concise description of what the bug is.
+**What happened**
+What you expected Chronicle to do and what it did instead (missed decision, duplicate ADR, extra turn, hook error, install problem, …).
 
-**To Reproduce**
-Steps to reproduce the behavior:
-1. Go to '...'
-2. Click on '....'
-3. See error
+**Steps to reproduce**
+1.
+2.
+3.
 
-**Expected behavior**
-A clear and concise description of what you expected to happen.
+**Environment**
+- Agent and version: (Claude Code / Codex / Gemini CLI / Cursor / Copilot CLI / Copilot in VS Code / OpenCode)
+- APM version (`apm --version`):
+- Chronicle version (from `apm.lock.yaml`):
+- OS:
 
-**Screenshots**
-If applicable, add screenshots to help explain your problem.
+**Chronicle activity log**
+The relevant lines from `.chronicle/log.jsonl`. They contain decision titles, so remove anything you don't want to share.
 
-**Environment (please complete the following information):**
- - OS: [e.g. iOS]
- - Browser [e.g. chrome, safari]
- - Version [e.g. 22]
+```
+```
 
-**Additional context**
-Add any other context about the problem here.
+**Config**
+Your `.chronicle.json`, if any.

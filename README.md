@@ -2,181 +2,132 @@
 
 > **Decisions that don't disappear.**
 
-Chronicle is an open-source companion for AI coding agents that captures architectural and design decisions as ADR markdown files in your repository. Local-first, no account, no telemetry. Sponsored by [architrace](https://architrace.io).
+Chronicle captures the architectural and design decisions you make with an AI coding agent and writes them as ADR markdown files into your repository, while you work. Local-first, no account, no telemetry. Sponsored by [architrace](https://architrace.io).
 
----
+It is distributed as an [APM](https://github.com/microsoft/apm) package and works with Claude Code, Codex, Gemini CLI, Cursor, GitHub Copilot and OpenCode, each as far as the agent allows (see [Supported agents](#supported-agents)).
 
-## Features
+## What it does
 
-- Auto-captures an ADR when you accept a plan in Claude Code's plan mode
-- Optional mid-session detection: a cheap keyword prefilter plus an LLM judge (~$0.001/turn with Haiku)
-- Manual `/log-decision` slash command in both Claude Code and OpenCode
-- Three ADR templates out of the box: Nygard classic, extended, lightweight
-- Every ADR is a plain markdown file committed to your repo — no account, no telemetry, no external service
+- **Plans become ADRs.** When a plan is approved, or when you start implementing a plan you discussed (even if you skipped the approval dialog), Chronicle archives the plan and has the agent write **one ADR per decision** in it.
+- **The agent records decisions as you make them.** Chronicle installs a short rule that every agent reads: when a design decision is settled, including a quick "ok, do that" or a library the agent picks while coding, it records an ADR in the same turn, using Chronicle's `decision-logger` agent or `chronicle-adr` skill.
+- **Manual capture is always available.** `/log-decision` records a decision, `/chronicle-review` sweeps the conversation for unrecorded ones, `/chronicle-status` shows what Chronicle has been doing.
+- **Deterministic bookkeeping.** Numbering, file names, templates, status changes and the index are handled by a script, not left to the model.
+- **Optional audit.** Want to know what the agent misses? Turn on audit mode and a cheap judge model (your agent's own CLI, e.g. `claude -p --model haiku`) checks each turn and logs decisions that got no ADR. It never interrupts the agent; `/chronicle-status` shows the result.
+- **No loops, nothing in your way.** Hooks only add context when a plan is implemented. They never block a turn or make the agent continue.
+
+## Supported agents
+
+What happens automatically depends on what each agent lets hooks do:
+
+| | Claude Code | Codex | Gemini CLI | Cursor | Copilot CLI | Copilot in VS Code | OpenCode |
+|---|---|---|---|---|---|---|---|
+| Plans turn into ADRs | ✅ | 📝 | ✅ | 📝 | ⚠️ | 📝 | 📝 |
+| Decisions made in chat are recorded | 📝 | 📝 ² | 📝 ² | 📝 | 📝 | 📝 | 📝 ² |
+| `/log-decision`, `/chronicle-review` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Optional audit of missed decisions | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ⚠️ ³ | — |
+| One-time setup | none | add the rule ² | add the rule ², accept the hook trust prompt | none | none | none | add the rule ² |
+
+✅ automatic, by a hook · 📝 the agent does it because Chronicle's rule tells it to (seen working in a live Claude Code session, not guaranteed); `/chronicle-review` catches what slipped through · ⚠️ expected to work, not tested yet · ² Chronicle's rule has to be added to `AGENTS.md` once: [how](docs/getting-started.md#add-the-chronicle-rule-to-agentsmd-codex-gemini-cli-opencode) · ³ VS Code's Copilot agent reads Chronicle's Copilot hooks; [not tested yet](docs/harnesses.md#github-copilot)
+
+Only Claude Code has been tested end to end with a live agent so far. Details per agent: [agent support](docs/harnesses.md).
 
 ## Requirements
 
-- Claude Code (with hooks support) or OpenCode
-- `bash`, `jq`, and standard POSIX tools
-- A project directory (typically a git repo)
+- [APM](https://github.com/microsoft/apm) ≥ 0.39 (`pip install apm-cli`, or run it via `uvx --from apm-cli apm`). Older versions don't install the rule for Claude Code.
+- `bash` (3.2 or later), `jq`, `git`
+- Linux, macOS or Windows with WSL. The hooks are bash scripts, so agents running natively on Windows can't run them; the skills and manual commands still work there. Tested on Linux so far.
+- One or more supported agents
 
 ## Install
 
-Run from the **root of the project you want to add Chronicle to**:
+From the root of your project:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/architraceio/chronicle/main/install.sh | bash
+apm install architraceio/chronicle
 ```
 
-> **Want to see what it does first?** Append `-s -- --dry-run` to preview every change without writing anything:
-> ```bash
-> curl -fsSL https://raw.githubusercontent.com/architraceio/chronicle/main/install.sh | bash -s -- --dry-run
-> ```
+APM detects which agents you use and deploys the matching files. To pick explicitly: `apm install architraceio/chronicle --target claude,codex`. Commit `apm.yml` and `apm.lock.yaml` so your team gets the same version with a plain `apm install`.
 
-Prefer to inspect the script before running it? Clone the repo into a tools directory and run the installer against your target project:
+One-time extra steps for some agents:
 
-```bash
-git clone https://github.com/architraceio/chronicle.git ~/.chronicle
-cd ~/path/to/your-project
-~/.chronicle/install.sh
-```
+| Agent | Step |
+|---|---|
+| Codex, Gemini CLI, OpenCode | Add Chronicle's rule to `AGENTS.md` with `apm compile` (Gemini also needs `@./AGENTS.md` in `GEMINI.md`). Without it the agent doesn't know it should record decisions. If you already have an `AGENTS.md`, it needs a marked section first: see [Add the Chronicle rule to AGENTS.md](docs/getting-started.md#add-the-chronicle-rule-to-agentsmd-codex-gemini-cli-opencode). |
+| Gemini CLI | Accept the hook trust prompt (plan capture). |
+| Codex | Only for audit mode: trust the Chronicle hooks in `/hooks` (again after each update). |
+| Any, with APM's executables gate on | `apm approve architraceio/chronicle` |
 
-The installer is interactive by default. For non-interactive runs, pass any of (works with `bash -s --` after the curl one-liner too):
-
-| Flag | Description |
-| --- | --- |
-| `--agent claude-code\|opencode\|both` | Install for specific agent(s) |
-| `--decisions-dir DIR` | Where ADRs are stored (default: `docs/decisions`) |
-| `--template NAME` | `adr-nygard` (default), `adr-extended`, or `adr-lightweight` |
-| `--no-stop-hook` | Disable the auto-capture Stop hook (Claude Code only) |
-| `--no-delegation-rule` | Don't append the delegation rule to `CLAUDE.md` / `AGENTS.md` |
-| `--dry-run` | Print changes without applying them |
-
-## What gets installed
-
-- `.chronicle.json` at the project root (configuration)
-- `<decisions-dir>/` (default `docs/decisions/`) for ADRs and an optional `_plans/` archive
-- For Claude Code:
-  - `.claude/agents/decision-logger.md`
-  - `.claude/hooks/chronicle-save-plan.sh`, `.claude/hooks/chronicle-prefilter.sh`
-  - `.claude/commands/log-decision.md`
-  - Hook entries merged into `.claude/settings.json` (existing hooks preserved)
-- For OpenCode:
-  - `.opencode/agent/decision-logger.md`
-  - `.opencode/command/log-decision.md`
-- Optional delegation rule appended to `CLAUDE.md` (Claude Code) or `AGENTS.md` (OpenCode) — see [The delegation rule](#the-delegation-rule) below for the exact text
-
-## Verify
-
-The installer prints a self-check before exiting. To re-verify later:
-
-```bash
-cat .chronicle.json                       # your config
-ls .claude/agents/decision-logger.md      # Claude Code adapter
-ls .opencode/agent/decision-logger.md     # OpenCode adapter
-```
+Optional: run `/chronicle-status` once. It shows the config, offers to create `.chronicle.json`, and lets you pick a template.
 
 ## Usage
 
-### Claude Code
+Mostly: none. Work as usual.
 
-1. Run `claude` and enter plan mode (`Shift+Tab` `Shift+Tab`).
-2. Accept a plan — Chronicle archives the plan and writes a new ADR to your decisions directory.
-3. Run `/log-decision` any time to capture a decision manually.
+- Approve a plan (or say "go ahead" and start implementing) → ADRs appear in `docs/decisions/`, the plan in `docs/decisions/_plans/`.
+- Settle something in conversation ("let's go with SQLite instead of Redis", or "ok, do that" to the agent's proposal) → the agent records it in the same turn.
+- `/log-decision [what you decided]` → record something by hand.
+- `/chronicle-review` → at the end of a session, find decisions that slipped through.
+- Review the ADRs in your diff like any other file, edit the prose, commit them with the code they explain.
 
-If the Stop hook is enabled, Chronicle also watches the end of each turn for undocumented decisions and prompts the `decision-logger` subagent when one is detected.
+Optional git safety net, independent of any agent:
 
-### OpenCode
+```bash
+bash .agents/skills/chronicle-adr/scripts/chronicle-adr guard install
+```
 
-Run `/log-decision` to capture a decision. Auto-capture isn't available in OpenCode by design — see [docs/opencode.md](docs/opencode.md) for the rationale.
+This warns when a commit changes dependency manifests, Dockerfiles, IaC or CI config without adding an ADR (set `"guard": {"mode": "block"}` to enforce).
 
-### Try it
+## What you get
 
-Not sure what counts as a decision? Open Claude Code in your project, enter plan mode (`Shift+Tab` `Shift+Tab`), and paste:
+```
+docs/decisions/
+  0001-postgres-for-primary-store.md   one ADR per decision (template of your choice)
+  0002-sqlite-for-local-cache.md
+  README.md                            generated index: number, title, status, date
+  _plans/20261125T093815Z-cache-layer.md   approved plans, verbatim, linked from their ADRs
+.chronicle.json                        config (optional, defaults apply)
+.chronicle/                            local state and activity log (self-gitignored)
+```
 
-> *"Plan how this project should handle configuration. Compare environment variables vs. a YAML file. Pick one and explain the trade-offs."*
-
-Accept the plan. Chronicle archives the plan to `<decisions-dir>/_plans/` and writes a fresh ADR (e.g. `0001-config-via-env-vars.md`) to your decisions directory. See [`examples/decisions/`](examples/decisions/) for what well-formed ADRs look like.
+See [`examples/decisions/`](examples/decisions/) for well-formed ADRs.
 
 ## Configuration
 
-Chronicle reads `.chronicle.json` from the project root:
+`.chronicle.json` (all keys optional):
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "decisionsDir": "docs/decisions",
   "template": "adr-nygard",
   "archivePlans": true,
-  "agents": ["claude-code", "opencode"],
-  "stopHook": {
-    "enabled": true,
-    "prefilterKeywords": [],
-    "judgeModel": "claude-haiku-4-5-20251001"
-  }
+  "capture": { "planAccept": true },
+  "judge": { "mode": "off", "model": null, "timeoutSec": 20 },
+  "guard": { "mode": "warn" }
 }
 ```
 
-## Templates
+Details in [docs/customization.md](docs/customization.md). Templates: `adr-nygard` (default), `adr-extended` (frontmatter, alternatives, rationale), `adr-lightweight`.
 
-Templates live in [`templates/`](templates/). The choice is made at install time and recorded in `.chronicle.json` under `template`.
-
-- [`adr-nygard.md`](templates/adr-nygard.md) — Michael Nygard's classic format (Status / Context / Decision / Consequences). Recommended.
-- [`adr-extended.md`](templates/adr-extended.md) — Adds YAML frontmatter, Alternatives Considered, and Rationale sections.
-- [`adr-lightweight.md`](templates/adr-lightweight.md) — Four sections only: Title, Decision, Why, Trade-offs.
-
-## The delegation rule
-
-When you accept the prompt, the installer appends this block to your `CLAUDE.md` (Claude Code) or `AGENTS.md` (OpenCode), wrapped in markers so the uninstaller can remove it cleanly:
-
-```markdown
-<!-- chronicle:delegation:start -->
-## Architectural Decisions (Chronicle)
-
-When a meaningful architectural or design decision is made — choosing between
-alternatives, adopting or dropping a library, changing data flow, picking a
-pattern, or accepting a plan — invoke the `decision-logger` subagent to record
-it as an ADR in the configured decisions directory (see `.chronicle.json`).
-
-Trigger phrases include: "let's go with", "we'll use", "decided to",
-"instead of", trade-off discussions, and accepting a plan in plan mode.
-
-Use `/log-decision` to capture a decision manually at any time.
-<!-- chronicle:delegation:end -->
-```
-
-Skip it with `--no-delegation-rule` if you'd rather copy it in by hand.
-
-## Uninstall
-
-From the **root of the project that has Chronicle installed**:
+## Update and uninstall
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/architraceio/chronicle/main/uninstall.sh | bash
+apm update architraceio/chronicle
+apm uninstall architraceio/chronicle
 ```
 
-Or, if you cloned the repo locally:
-
-```bash
-~/.chronicle/uninstall.sh
-```
-
-The uninstaller reads `.chronicle.json`, removes the adapter files for each configured agent, strips the delegation rule from `CLAUDE.md` / `AGENTS.md` (between its markers), and deletes `.chronicle.json`. An empty decisions directory is removed; any ADRs you've already written stay in place.
+Uninstall removes Chronicle's hooks, scripts, skills, agents and commands, and leaves your other hooks untouched. It doesn't touch `AGENTS.md`: delete the Chronicle text from it yourself (see [above](docs/getting-started.md#add-the-chronicle-rule-to-agentsmd-codex-gemini-cli-opencode)). Your ADRs, plans and `.chronicle.json` stay: they are your records.
 
 ## Documentation
 
-- [Getting Started](docs/getting-started.md)
-- [How It Works](docs/how-it-works.md)
+- [Getting started](docs/getting-started.md)
+- [How it works](docs/how-it-works.md): capture flows, the rule, audit mode
+- [Agent support in detail](docs/harnesses.md): full matrix, workarounds, per-agent notes
+- [Behavior reference](docs/behavior.md): every event, message, file and log entry
 - [Customization](docs/customization.md)
-- [Claude Code Adapter](docs/claude-code.md)
-- [OpenCode Adapter](docs/opencode.md)
-- [Why Use ADRs](docs/why-adrs.md)
-- [Scaling Up](docs/scaling-up.md)
-
-## Examples
-
-Sample ADRs live in [`examples/decisions/`](examples/decisions/).
+- [Why ADRs](docs/why-adrs.md)
+- [Scaling up](docs/scaling-up.md)
 
 ## Contributing
 
-PRs welcome. See [CONTRIBUTING.md](CONTRIBUTING.md), [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md), and [SECURITY.md](SECURITY.md). Released under the [MIT license](LICENSE).
+PRs welcome. `make all` syncs the shared hook engine into each package, lints and runs the unit tests; `make test-apm` installs the package into a fixture project with APM. See [CONTRIBUTING.md](CONTRIBUTING.md), [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) and [SECURITY.md](SECURITY.md). Released under the [MIT license](LICENSE).

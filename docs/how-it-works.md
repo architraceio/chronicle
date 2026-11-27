@@ -1,65 +1,39 @@
-# How It Works
+# How it works
 
-Chronicle automatically captures architectural and design decisions as ADRs in your repository. It works with both Claude Code and OpenCode.
+This is the overview. The [behavior reference](behavior.md) covers every event, message, state file and log entry in detail.
 
-## Claude Code Adapter
+Chronicle has three parts:
 
-The Claude Code adapter provides two modes of decision capture:
+- **`chronicle-adr`** (in the `chronicle-adr` skill): a bash script that owns numbering, file names, templates, status changes, the index and the git guard. The model only writes prose.
+- **`chronicle-hook`**: one hook engine shared by all agents. Each agent's hook package calls it with `--harness <name>`, and it translates that agent's hook payloads and outputs.
+- **Skills, agent, rule**: `chronicle-adr` (procedure and quality bar), `log-decision`, `chronicle-review`, `chronicle-status`, the `decision-logger` subagent, and a short instruction.
 
-### Plan Acceptance Auto-Capture
+## Plan capture
 
-When you accept a plan in Claude Code's plan mode, Chronicle automatically generates an ADR from that plan:
+1. **Proposed.** When the agent presents a plan (`PreToolUse(ExitPlanMode)` in Claude Code, `BeforeTool(exit_plan_mode)` in Gemini), Chronicle stores it as *pending*. This also happens when you reject the dialog.
+2. **Promoted**, whichever comes first:
+   - the plan is approved (`PostToolUse(ExitPlanMode)`), or
+   - the first file edit inside the project while a plan is pending, i.e. you started implementing some other way (Esc → question → "go ahead"), or
+   - `/log-decision` with no arguments.
+3. **On promotion** Chronicle re-reads the plan file, so later revisions count, and archives it to `<decisionsDir>/_plans/`. It then tells the agent to record **one ADR per decision** in the plan, Status Accepted, linked to the archive. This is extra context; it doesn't interrupt the turn.
+4. A plan that is never implemented produces no ADR. You get a reminder at the next session start.
 
-1. Claude Code's `PostToolUse` hook fires on `ExitPlanMode` 
-2. Chronicle saves the raw plan to `docs/decisions/_plans/`
-3. Chronicle prompts Claude to invoke the `decision-logger` subagent with the plan content
-4. The subagent generates a properly formatted ADR
+## Decisions made in conversation
 
-### Mid-Session Decision Auto-Capture
+The agent records them itself. The rule Chronicle installs tells it to record each settled design decision in the same turn, with the `decision-logger` subagent or the `chronicle-adr` skill. That covers a choice you state ("let's go with SQLite"), a short acceptance of the agent's proposal ("ok, do that") and choices the agent makes while implementing (a new dependency, a library, a data model). No hook is involved, so this works the same in every agent that sees the rule, including OpenCode.
 
-When you're in a Claude Code conversation, Chronicle can detect undocumented decisions using:
+Earlier designs had an end-of-turn hook with a keyword filter and a judge that made the agent continue. In live tests the agent had already started `decision-logger` before the hook ran, and the keyword filter missed most real phrasings while matching ordinary ones. So the hook no longer decides anything.
 
-1. A keyword prefilter that scans for decision-related terms
-2. An LLM judge that evaluates whether a decision should be documented
-3. Automatic invocation of the `decision-logger` subagent when a decision is detected
+What slips through is caught by:
 
-Both automatic capture methods require confirmation from you before proceeding.
+- `/chronicle-review`: the agent goes through the conversation, lists decisions without an ADR and records the ones you pick. Use it at the end of longer sessions.
+- `chronicle-adr guard`: a git hook or CI step that warns when dependency manifests, Dockerfiles, IaC or CI config change without a new ADR.
+- **Audit mode** (optional, `"judge": {"mode": "audit"}`): at the end of each turn, a small model reads your last message and the agent's reply and logs the decisions it sees and whether an ADR was written. It never messages or blocks the agent. `/chronicle-status` lists possible misses. Use it to find out how well the rule works for your agent and your way of working.
 
-## OpenCode Adapter
+The audit judge is your agent's CLI with a small model, run in an empty temp directory with `CHRONICLE_JUDGE=1` and hooks disabled where possible, under a single-judge lock, so its own session can't run Chronicle again. It reads only text from documented hook fields (your prompt, the agent's reply), not the transcript.
 
-The OpenCode adapter provides manual capture only:
+Everything Chronicle does is logged to `.chronicle/log.jsonl`. `/chronicle-status` summarizes it. Any internal error in the engine results in "allow": Chronicle can fail, but it can't wedge your agent.
 
-- A `/log-decision` slash command that invokes the `decision-logger` subagent
-- No automatic detection, which is by design to keep the project minimal
-- Integration that works similar to Claude Code but with a manual workflow
+## Bookkeeping
 
-## Decision Logging Subagent
-
-The `decision-logger` subagent is the core of Chronicle:
-
-1. Reads `.chronicle.json` to determine configuration
-2. Determines the next ADR number by counting existing ADRs
-3. Reads and applies the configured ADR template
-4. Generates a properly formatted ADR
-5. Writes the ADR to the configured decisions directory
-6. Prints the new ADR's path
-
-## Configuration
-
-Chronicle stores its configuration in `.chronicle.json` at the root of your project.
-
-```json
-{
-  "version": 1,
-  "decisionsDir": "docs/decisions",
-  "template": "adr-nygard",
-  "archivePlans": true,
-  "agents": ["claude-code", "opencode"],
-  "stopHook": {
-    "enabled": true,
-    "prefilterKeywords": [],
-    "judgeModel": "claude-haiku-4-5-20251001"
-  },
-  "installDir": "/path/to/chronicle"
-}
-```
+`chronicle-adr new --title … --status …` allocates the next 4-digit number, slugifies the title, refuses duplicates, fills the template and prints the path. `supersede N --by M` is the only edit ever made to an existing ADR. `index` regenerates `docs/decisions/README.md`. `guard` checks commits for decision-heavy changes without an ADR.

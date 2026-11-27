@@ -1,0 +1,4 @@
+name: chronicle-core
+version: 0.2.0
+description: Chronicle ADR skill and templates, decision-logger agent, rule and commands (works in every harness).
+license: MIT

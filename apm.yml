@@ -1,0 +1,13 @@
+name: chronicle
+version: 0.2.0
+description: Records the architectural decisions you make with coding agents as ADRs in your repo, while you work.
+author: architrace
+license: MIT
+dependencies:
+  apm:
+    - ./packages/core
+    - ./packages/hooks-claude
+    - ./packages/hooks-codex
+    - ./packages/hooks-gemini
+    - ./packages/hooks-cursor
+    - ./packages/hooks-copilot

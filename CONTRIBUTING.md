@@ -28,7 +28,15 @@ If you find a bug or have a feature request, please open an issue on GitHub. Inc
 
 ## Development Setup
 
-Chronicle is a minimal project with shell scripts and markdown files. No special setup is required beyond a standard shell environment.
+You need `bash`, `jq`, `git` and [uv](https://docs.astral.sh/uv/) (used to run shellcheck and APM without installing them).
+
+- `packages/core/`: skills, templates, the `chronicle-adr` script, the `decision-logger` agent and the rule. Works in every agent.
+- `packages/engine/`: the shared hook engine. **Edit it here only**, then run `make sync` to copy it into each `packages/hooks-<agent>/`.
+- `packages/hooks-<agent>/`: per-agent hook wiring (`targets:` restricts each to its agent).
+
+If you change what the engine does (events, messages, state files, log actions, the rule), update [docs/behavior.md](docs/behavior.md) as well, and the support tables if an agent's support changes (README, `docs/getting-started.md`, `docs/index.md`, `docs/harnesses.md`).
+
+`make all` syncs, checks the sync, lints and runs the unit tests. `make test-apm` installs the package into a fixture project with APM. See [TESTING.md](TESTING.md) for the live smoke tests.
 
 ## License
 

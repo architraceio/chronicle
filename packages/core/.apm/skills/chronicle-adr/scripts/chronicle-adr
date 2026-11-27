@@ -1,0 +1,280 @@
+#!/usr/bin/env bash
+# chronicle-adr — deterministic ADR bookkeeping for Chronicle.
+# The model writes the prose; this script owns numbering, file names,
+# templates, status changes, the index and the git guard.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TEMPLATES_DIR="${CHRONICLE_TEMPLATES_DIR:-$SCRIPT_DIR/../templates}"
+
+die() { echo "chronicle-adr: $*" >&2; exit 1; }
+command -v jq >/dev/null 2>&1 || die "jq is required"
+
+project_dir() {
+  if [ -n "${CHRONICLE_PROJECT_DIR:-}" ]; then echo "$CHRONICLE_PROJECT_DIR"; return; fi
+  if [ -n "${CLAUDE_PROJECT_DIR:-}" ]; then echo "$CLAUDE_PROJECT_DIR"; return; fi
+  if [ -n "${GEMINI_PROJECT_DIR:-}" ]; then echo "$GEMINI_PROJECT_DIR"; return; fi
+  git rev-parse --show-toplevel 2>/dev/null || pwd
+}
+PROJECT_DIR="$(project_dir)"
+CONFIG_FILE="$PROJECT_DIR/.chronicle.json"
+STATE_DIR="$PROJECT_DIR/.chronicle/state"
+
+DEFAULT_CONFIG='{
+  "version": 2,
+  "decisionsDir": "docs/decisions",
+  "template": "adr-nygard",
+  "archivePlans": true,
+  "capture": { "planAccept": true },
+  "judge": { "mode": "off", "model": null, "timeoutSec": 20 },
+  "guard": { "mode": "warn", "paths": [
+    "package.json", "go.mod", "pyproject.toml", "requirements*.txt", "Cargo.toml",
+    "pom.xml", "build.gradle*", "Gemfile", "composer.json",
+    "Dockerfile*", "docker-compose*", "*.tf", ".github/workflows/*" ] }
+}'
+
+# Effective config: defaults deep-merged with .chronicle.json (v1 keys migrated,
+# keys of earlier 0.2 previews dropped).
+config() {
+  local user='{}'
+  if [ -f "$CONFIG_FILE" ]; then user="$(jq -c . "$CONFIG_FILE" 2>/dev/null)" || die "invalid JSON in $CONFIG_FILE"; fi
+  jq -n --argjson d "$DEFAULT_CONFIG" --argjson u "$user" '
+    # v1 -> v2 migration
+    ($u
+      | if (.stopHook? // null) != null then
+          .judge.model = (.judge.model // .stopHook.judgeModel // null)
+          | del(.stopHook)
+        else . end
+      | del(.installDir, .agents, .prefilterKeywords, .capture.midSession?, .capture.mode?,
+            .capture.maxBlocksPerSession?, .judge.via?, .judge.fallback?)) as $m
+    | $d * $m | .version = 2'
+}
+cfg() { config | jq -r "$1"; }
+
+decisions_dir() {
+  local d; d="$(cfg '.decisionsDir')"
+  case "$d" in /*) echo "$d" ;; *) echo "$PROJECT_DIR/${d%/}" ;; esac
+}
+
+slugify() {
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' | cut -c1-60 | sed -E 's/-+$//'
+}
+
+adr_files() {
+  local dir; dir="$(decisions_dir)"
+  [ -d "$dir" ] || return 0
+  find "$dir" -maxdepth 1 -type f -name '[0-9]*-*.md' | sort
+}
+
+next_number() {
+  local max=0 n f
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    n="$(basename "$f" | sed -E 's/^0*([0-9]+)-.*/\1/')"
+    [ -n "$n" ] && [ "$n" -gt "$max" ] && max="$n"
+  done < <(adr_files)
+  printf '%04d\n' $((max + 1))
+}
+
+find_adr() { # find_adr N -> path
+  local n; n="$(printf '%d' "$((10#$1))")"
+  adr_files | while IFS= read -r f; do
+    [ "$(basename "$f" | sed -E 's/^0*([0-9]+)-.*/\1/')" = "$n" ] && { echo "$f"; break; }
+  done
+}
+
+adr_title() { sed -n -E '0,/^# /s/^# ([0-9]+\. )?//p' "$1" | head -1; }
+adr_status() {
+  local s
+  s="$(sed -n -E 's/^status:[[:space:]]*(.+)$/\1/p' "$1" | head -1)"
+  [ -z "$s" ] && s="$(sed -n -E 's/.*Status:[[:space:]]*(.+)$/\1/p' "$1" | head -1)"
+  [ -z "$s" ] && s="$(awk '/^## Status/{f=1;next} f&&NF{print;exit}' "$1")"
+  echo "${s:-unknown}"
+}
+adr_date() { sed -n -E 's/^(Date|date):[[:space:]]*([0-9-]+).*/\2/p' "$1" | head -1; }
+
+mark_written() { # tell the hook engine an ADR was written in this turn
+  mkdir -p "$STATE_DIR" 2>/dev/null || return 0
+  [ -f "$PROJECT_DIR/.chronicle/.gitignore" ] || printf '*\n' > "$PROJECT_DIR/.chronicle/.gitignore" 2>/dev/null || true
+  date +%s > "$STATE_DIR/last-adr" 2>/dev/null || true
+}
+
+cmd_new() {
+  local title="" status="Proposed" supersedes="" plan=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --title) title="$2"; shift 2 ;;
+      --status) status="$2"; shift 2 ;;
+      --supersedes) supersedes="$2"; shift 2 ;;
+      --plan) plan="$2"; shift 2 ;;
+      *) die "new: unknown argument $1" ;;
+    esac
+  done
+  [ -n "$title" ] || die "new: --title is required"
+  case "$status" in Proposed|Accepted) ;; *) die "new: --status must be Proposed or Accepted" ;; esac
+
+  local template tfile dir num slug path date uuid
+  template="$(cfg '.template')"
+  case "$template" in
+    */*|*.md) case "$template" in /*) tfile="$template" ;; *) tfile="$PROJECT_DIR/$template" ;; esac ;;
+    *) tfile="$TEMPLATES_DIR/$template.md" ;;
+  esac
+  [ -f "$tfile" ] || die "template not found: $tfile"
+  dir="$(decisions_dir)"; mkdir -p "$dir"
+  slug="$(slugify "$title")"; [ -n "$slug" ] || die "new: title produces an empty slug"
+  if adr_files | grep -q -- "-$slug\.md$"; then
+    die "an ADR with slug '$slug' already exists: $(adr_files | grep -- "-$slug\.md$")"
+  fi
+  num="$(next_number)"
+  path="$dir/$num-$slug.md"
+  [ -e "$path" ] && die "refusing to overwrite $path"
+  date="$(date -u +%Y-%m-%d)"
+  uuid="$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen 2>/dev/null || echo "$num-$slug")"
+
+  local status_value="$status"
+  [ -n "$supersedes" ] && status_value="$status (supersedes ADR-$(printf '%04d' "$((10#$supersedes))"))"
+
+  TITLE="$title" NUM="$num" DATE="$date" STATUS="$status_value" UUID="$uuid" \
+  SUP="${supersedes:+ADR-$(printf '%04d' "$((10#$supersedes))")}" PLAN="$plan" \
+  awk '
+    { gsub(/\{number\}/, ENVIRON["NUM"]); gsub(/\{title\}/, ENVIRON["TITLE"]);
+      gsub(/\{ISO date\}/, ENVIRON["DATE"]); gsub(/\{uuid\}/, ENVIRON["UUID"]);
+      gsub(/\{Proposed \| Accepted \| Deprecated \| Superseded by ADR-XXXX\}/, ENVIRON["STATUS"]);
+      if ($0 ~ /^supersedes:[[:space:]]*$/) $0 = "supersedes: " ENVIRON["SUP"];
+      if ($0 ~ /^links: \[\]$/ && ENVIRON["PLAN"] != "") $0 = "links: [\"" ENVIRON["PLAN"] "\"]";
+      print }' "$tfile" > "$path"
+  if [ -n "$plan" ] && ! grep -q '^links:' "$path"; then
+    printf '\nSource plan: [%s](%s)\n' "$(basename "$plan")" "$plan" >> "$path"
+  fi
+  mark_written
+  echo "$path"
+}
+
+cmd_supersede() {
+  local old="${1:-}" by=""
+  [ "${2:-}" = "--by" ] && by="${3:-}"
+  [ -n "$old" ] && [ -n "$by" ] || die "usage: supersede N --by M"
+  local f; f="$(find_adr "$old")"; [ -n "$f" ] || die "ADR $old not found"
+  local m; m="ADR-$(printf '%04d' "$((10#$by))")"
+  local tmp; tmp="$(mktemp)"
+  awk -v s="Superseded by $m" '
+    /^status:/ { print "status: " s; next }
+    /Status:/ && !/^## / { sub(/Status:.*/, "Status: " s); print; next }
+    /^## Status/ { print; f=1; next }
+    f && NF { print s; f=0; next }
+    { print }' "$f" > "$tmp" && cat "$tmp" > "$f" && rm -f "$tmp"
+  echo "$f"
+}
+
+cmd_list() {
+  adr_files | while IFS= read -r f; do
+    printf '%s\t%s\t%s\n' "$(basename "$f" | cut -d- -f1)" "$(adr_status "$f")" "$(adr_title "$f")"
+  done
+}
+
+cmd_index() {
+  local dir out; dir="$(decisions_dir)"; mkdir -p "$dir"; out="$dir/README.md"
+  {
+    echo "# Architecture Decision Records"
+    echo
+    echo "<!-- generated by chronicle-adr index; do not edit by hand -->"
+    echo
+    echo "| # | Title | Status | Date |"
+    echo "|---|---|---|---|"
+    adr_files | while IFS= read -r f; do
+      printf '| %s | [%s](%s) | %s | %s |\n' "$(basename "$f" | cut -d- -f1)" "$(adr_title "$f")" "$(basename "$f")" "$(adr_status "$f")" "$(adr_date "$f")"
+    done
+  } > "$out"
+  echo "$out"
+}
+
+# guard: warn (or block) when decision-heavy files change without a new ADR.
+cmd_guard() {
+  if [ "${1:-}" = "install" ]; then
+    local hook; hook="$(git -C "$PROJECT_DIR" rev-parse --git-path hooks)/pre-commit"
+    case "$hook" in /*) ;; *) hook="$PROJECT_DIR/$hook" ;; esac
+    if [ -e "$hook" ] && ! grep -q 'chronicle-adr guard' "$hook"; then
+      die "a pre-commit hook already exists at $hook; add this line to it: \"$SCRIPT_DIR/chronicle-adr\" guard --staged"
+    fi
+    printf '#!/usr/bin/env bash\n# chronicle guard\nexec "%s" guard --staged\n' "$SCRIPT_DIR/chronicle-adr" > "$hook"
+    chmod +x "$hook"; echo "installed $hook"; return 0
+  fi
+  local mode range="" changed added
+  mode="$(cfg '.guard.mode')"
+  case "${1:-}" in
+    --staged|"") changed="$(git -C "$PROJECT_DIR" diff --cached --name-only --diff-filter=ACMR)"
+                 added="$(git -C "$PROJECT_DIR" diff --cached --name-only --diff-filter=A)" ;;
+    --range) range="${2:?--range needs A..B}"
+             changed="$(git -C "$PROJECT_DIR" diff --name-only --diff-filter=ACMR "$range")"
+             added="$(git -C "$PROJECT_DIR" diff --name-only --diff-filter=A "$range")" ;;
+    *) die "usage: guard [--staged | --range A..B | install]" ;;
+  esac
+  local ddir rel_ddir; ddir="$(cfg '.decisionsDir')"; rel_ddir="${ddir%/}"
+  if printf '%s\n' "$added" | grep -Eq "^${rel_ddir}/[0-9]+-[^/]+\.md$"; then return 0; fi
+  local hits="" f p
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    while IFS= read -r p; do
+      # shellcheck disable=SC2254
+      case "$f" in $p|*/$p) hits="$hits  $f"$'\n'; break ;; esac
+    done < <(cfg '.guard.paths[]')
+  done <<< "$changed"
+  [ -z "$hits" ] && return 0
+  {
+    echo "chronicle: these changes often carry an architectural decision, but no ADR was added:"
+    printf '%s' "$hits"
+    echo "  Record it with /log-decision (or skip: git commit --no-verify)."
+  } >&2
+  [ "$mode" = "block" ] && return 1
+  return 0
+}
+
+usage() {
+  cat <<'EOF'
+chronicle-adr <command>
+  config                         print effective config (defaults + .chronicle.json)
+  init [--template T] [--dir D]  write .chronicle.json and create the decisions dir
+  next-number                    print the next 4-digit ADR number
+  new --title T [--status Proposed|Accepted] [--supersedes N] [--plan PATH]
+                                 create an ADR skeleton from the template, print its path
+  supersede N --by M             set ADR N's status to "Superseded by ADR-M"
+  list                           number<TAB>status<TAB>title for every ADR
+  index                          regenerate <decisionsDir>/README.md
+  guard [--staged|--range A..B]  warn/block when decision-heavy files change without an ADR
+  guard install                  install guard as a git pre-commit hook
+EOF
+}
+
+cmd_init() {
+  local template="" dir=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --template) template="$2"; shift 2 ;;
+      --dir) dir="$2"; shift 2 ;;
+      *) die "init: unknown argument $1" ;;
+    esac
+  done
+  if [ -n "$template" ] && [ ! -f "$TEMPLATES_DIR/$template.md" ] && [ ! -f "$template" ] && [ ! -f "$PROJECT_DIR/$template" ]; then
+    die "unknown template $template"
+  fi
+  local cur; cur="$(config)"
+  [ -n "$template" ] && cur="$(jq --arg t "$template" '.template=$t' <<< "$cur")"
+  [ -n "$dir" ] && cur="$(jq --arg d "$dir" '.decisionsDir=$d' <<< "$cur")"
+  jq 'del(.guard)' <<< "$cur" > "$CONFIG_FILE"
+  mkdir -p "$(decisions_dir)" "$PROJECT_DIR/.chronicle"
+  [ -f "$PROJECT_DIR/.chronicle/.gitignore" ] || printf '*\n' > "$PROJECT_DIR/.chronicle/.gitignore"
+  echo "$CONFIG_FILE"
+}
+
+case "${1:-}" in
+  config) config ;;
+  init) shift; cmd_init "$@" ;;
+  next-number) next_number ;;
+  new) shift; cmd_new "$@" ;;
+  supersede) shift; cmd_supersede "$@" ;;
+  list) cmd_list ;;
+  index) cmd_index ;;
+  guard) shift; cmd_guard "$@" ;;
+  -h|--help|help|"") usage ;;
+  *) usage >&2; exit 2 ;;
+esac

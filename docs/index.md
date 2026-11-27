@@ -1,33 +1,34 @@
-# Chronicle Documentation
+# Chronicle documentation
 
-Chronicle is an open-source companion for AI coding agents that captures 
-architectural and design decisions as ADR markdown files in your repository. 
-Local-first, no account, no telemetry.
-
-## Quick Start
-
-Install Chronicle in 60 seconds and create your first ADR in 3 minutes:
+Chronicle captures architectural and design decisions made with AI coding agents as ADR markdown files in your repository. Local-first, no account, no telemetry.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/architraceio/chronicle/main/install.sh | bash
+apm install architraceio/chronicle
 ```
 
-1. Run `claude` and use plan mode (Shift+Tab Shift+Tab)
-2. Accept a plan — your first ADR will appear in `docs/decisions/`
-3. Or run `/log-decision` to capture a decision manually
+Approve or implement a plan, or settle a decision in conversation, and ADRs appear in `docs/decisions/`. Use `/log-decision` and `/chronicle-review` any time.
 
-## Overview
+## Supported agents
 
-Chronicle provides two adapters:
-- **Claude Code adapter**: Supports both automatic capture (plan acceptance + mid-session detection) and manual capture
-- **OpenCode adapter**: Supports manual capture only
+| | Claude Code | Codex | Gemini CLI | Cursor | Copilot CLI | Copilot in VS Code | OpenCode |
+|---|---|---|---|---|---|---|---|
+| Plans turn into ADRs | ✅ | 📝 | ✅ | 📝 | ⚠️ | 📝 | 📝 |
+| Decisions made in chat are recorded | 📝 | 📝 ² | 📝 ² | 📝 | 📝 | 📝 | 📝 ² |
+| `/log-decision`, `/chronicle-review` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Optional audit of missed decisions | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ⚠️ ³ | — |
+| One-time setup | none | add the rule ² | add the rule ², accept the hook trust prompt | none | none | none | add the rule ² |
+
+✅ automatic, by a hook · 📝 the agent does it because Chronicle's rule tells it to (seen working in a live Claude Code session, not guaranteed); `/chronicle-review` catches what slipped through · ⚠️ expected to work, not tested yet · ² Chronicle's rule has to be added to `AGENTS.md` once: [how](getting-started.md#add-the-chronicle-rule-to-agentsmd-codex-gemini-cli-opencode) · ³ VS Code's Copilot agent reads Chronicle's Copilot hooks; [not tested yet](harnesses.md#github-copilot)
+
+Only Claude Code has been tested end to end with a live agent so far. Details per agent: [agent support](harnesses.md).
+
 
 ## Contents
 
-- [Getting Started](getting-started.md)
-- [How It Works](how-it-works.md)
+- [Getting started](getting-started.md)
+- [How it works](how-it-works.md)
+- [Agent support in detail](harnesses.md)
+- [Behavior reference](behavior.md): in-depth, event by event
 - [Customization](customization.md)
-- [Claude Code Adapter](claude-code.md)
-- [OpenCode Adapter](opencode.md)
-- [Why Use ADRs](why-adrs.md)
-- [Scaling Up](scaling-up.md)
+- [Why ADRs](why-adrs.md)
+- [Scaling up](scaling-up.md)
